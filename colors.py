@@ -7,12 +7,15 @@ class bcolors:
     FAIL = '\033[91m' 		#red
     ENDC = '\033[0m'
     BOLD = '\033[1m'
+    RED = '\033[31m'
     UNDERLINE = '\033[4m'
 
 def printGreen(txt):
 	print bcolors.OKGREEN + txt + bcolors.ENDC,
 def printRed(txt):
-	print bcolors.FAIL + txt + bcolors.ENDC,
+	print bcolors.RED + txt + bcolors.ENDC,
+def printOrange(txt):
+    print bcolors.FAIL + txt + bcolors.ENDC,
 def printWarning(txt):
 	print bcolors.WARNING + txt + bcolors.ENDC,
 def printBlue(txt):

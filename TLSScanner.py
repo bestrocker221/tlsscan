@@ -32,7 +32,8 @@ def TCPConnect(target):
 # 
 # Function that deliver ClientHello and return the server response
 #
-# parameters = ( target, cipher_code, TLSversion )
+# parameters = ( target, cipher_code, TLSversion,
+#         tls_fallback_enabled, compression_enabled )
 # 
 # return (version, server_response) if accepted else None
 # 
@@ -40,27 +41,35 @@ def TCPConnect(target):
 def send_cipher_suite(parameters):
 	target = parameters[0]
 	cipher_code = parameters[1]
-	#remove SCSV signaling suite
-	if 0x5600 in cipher_code:
-		cipher_code.remove(0x5600)
 	ver = parameters[2]
+	tls_fallback = parameters[3]
+	compression = parameters[4]
+
+	if 0x5600 in cipher_code and not tls_fallback:
+		cipher_code.remove(0x5600)
+	else:
+		cipher_code.append(0x5600)
+	
+	#cipher_code.remove(0x5600) if (0x5600 in cipher_code and not tls_fallback) else cipher_code.append(0x5600)
+	compression = range(1,0xff) if compression else 0x00
+
 	sock = TCPConnect(target)
 	packet = TLSRecord(version="TLS_1_0")/\
 			TLSHandshake()/\
 			TLSClientHello(version=ver,
-							compression_methods=0x00,
+							compression_methods=compression,
 							cipher_suites=cipher_code,)
+
 	sock.sendall(str(packet))
 	try:
 		resp = sock.recv(10240)
-	except socket.error, msg:
-		"socket error: " + msg
-
+	except socket.error as msg:
+		"socket error: " + str(msg.errno)
+		return None
 	sock.close()
 
 	ssl_p = SSL(resp)
-	
-	if ssl_p.haslayer(TLSServerHello):
+	if ssl_p.haslayer(TLSServerHello) or ssl_p.haslayer(TLSAlert):
 		return (ver,resp)
 	else:
 		return None
@@ -73,6 +82,10 @@ def send_cipher_suite(parameters):
 # 
 # return (version, server_response) if accepted else None
 # 
+# Structure of ordered_cipher_list:
+# Example
+# { "TLS_1_0": [0x00,0x01]}
+# 
 # #
 def order_cipher_suites(parameters):
 	target = parameters[0]
@@ -82,16 +95,36 @@ def order_cipher_suites(parameters):
 	ordered_cipher_list.update({ver:[]})
 	go = True
 	while go:
-		resp = send_cipher_suite((target, cipher_code_list, ver))
+		resp = send_cipher_suite((target, cipher_code_list, ver, False, False))
 		if resp != None:
-			accepted_cipher = SSL(resp[1])
-			accepted_cipher = accepted_cipher.getlayer(TLSServerHello).cipher_suite
-			ordered_cipher_list.get(ver).append(accepted_cipher)
-			cipher_code_list.remove(accepted_cipher)
+			resp = SSL(resp[1])
+			if resp.haslayer(TLSServerHello):
+				accepted_cipher = resp.getlayer(TLSServerHello).cipher_suite
+				ordered_cipher_list.get(ver).append(accepted_cipher)
+				cipher_code_list.remove(accepted_cipher)
+			elif resp.haslayer(TLSAlert):
+				if resp.getlayer(TLSAlert).description == 40:
+					#handshake failure
+					go = False
 		else:
 			go = False
 	return (ver,ordered_cipher_list)
 
+class Event(object):
+	class CODE:
+		RC4 = 1
+		MD5 = 2
+		SHA = 3
+		CBC = 4
+		DHE = 5
+
+	class LEVEL:
+		RED = "RED"
+		YELLOW = "YELLOW"
+	def __init__(self, subject, level, description):
+		self.level = level
+		self.description = description
+		self.subject = subject
 
 class TLSScanner(object):
 
@@ -104,16 +137,24 @@ class TLSScanner(object):
 		
 		self.cipher_suites_supported = []
 
-		self.ACCEPTED_CIPHERS = {}
 		self.ACCEPTED_ORDERED_CIPHERS = {}
+		# Structure of ordered_cipher_list:
+		# Example
+		# { "TLS_1_0": [0x00,0x01], "TLS_1_1":[0x32], ...}
+		# 
 		self.ACCEPTED_CIPHERS_LEN = 0
 		self.TLS_FALLBACK_SCSV_SUPPORTED = None
 		self.SECURE_RENEGOTIATION = None
 		self.COMPRESSION_ENABLED = None
 		self.RESPONSES = []
+		#to define
+		
 		self.SUPP_PROTO = []
 
 		self.EVENTS = []
+		# Structure of events:
+		# {"TLS_1_1":[msg1, msg2], ... }
+		# {subject:msg[], .. } 
 
 		if not checkConnection(self.target):
 			sys.exit(1)
@@ -125,50 +166,32 @@ class TLSScanner(object):
 		print "scanning for supported protocol...  ",
 		a = timeit.default_timer()
 		for proto in self.PROTOS:
-			vout,vin = ("SSL_3_0", proto)
-			##Creating TLS packet
-			sock = TCPConnect(self.target)
-
-			packet = TLSRecord(version=vout)/\
-				TLSHandshake()/\
-				TLSClientHello(version=vin,
-								compression_methods=0x00,
-								cipher_suites=range(0x00, 0x4D)+range(0x60,0x70)
-									+range(0x80,0xBA)+range(0xc001,0xc03c)+[0x5600],)
-			sock.sendall(str(packet))
-			try:
-				resp = sock.recv(10240)
-			except socket.error, msg:
-				if msg.errno == 104:
-					#tcp reset
-				    pass	
-				else:
-					print "socket error: %s" % msg
-				resp = ''
-
-			sock.close()
-
-			resp = SSL(resp)
 			error = 0
-			
-			if resp.haslayer(TLSAlert):
-				#print "Version: %d" % resp[TLSRecord].version
-				if resp[TLSAlert].description == 86:
-					#signaling suite supported
-					#print "INAPPROPRIATE_FALLBACK --> SERVER SUPPORT SCSV SIGNALING"
-					self.TLS_FALLBACK_SCSV_SUPPORTED = True
-				if resp[TLSAlert].description == 70:
-					#Protocol not supported by server
-					error = 1
-				if resp[TLSAlert].description == 40:
-					#Handshake failure
-					error = 1
-
-			if len(resp) == 0 or error != 0:
-				self.RESPONSES.append("TLSRecord version: %s Handshake version: %s not supported" % (vout,vin))
+			#scan for accepted protocol and include SCSV fallback signal
+			params = (self.target, range(0xff), proto, True, False)
+			resp = send_cipher_suite(params)
+			if resp == None:
+				error = 1
 			else:
-				self.RESPONSES.append("TLSRecord version: %s Handshake version: %s supported" % (vout,vin))
-				self.SUPP_PROTO.append(vin)
+				resp = SSL(resp[1])
+				if resp.haslayer(TLSAlert):
+					#print "Version: %d" % resp[TLSRecord].version
+					if resp[TLSAlert].description == 86:
+						#signaling suite supported
+						#print "INAPPROPRIATE_FALLBACK --> SERVER SUPPORT SCSV SIGNALING"
+						self.TLS_FALLBACK_SCSV_SUPPORTED = True
+					if resp[TLSAlert].description == 70:
+						#Protocol not supported by server
+						error = 1
+					if resp[TLSAlert].description == 40:
+						#Handshake failure
+						error = 1
+
+			if error != 0:
+				self.RESPONSES.append("TLSRecord version: TLS_1_0 Handshake version: %s not supported" % proto)
+			else:
+				self.RESPONSES.append("TLSRecord version: TLS_1_0 Handshake version: %s supported" % proto)
+				self.SUPP_PROTO.append(proto)
 
 			if self.TLS_FALLBACK_SCSV_SUPPORTED == None:
 				self.TLS_FALLBACK_SCSV_SUPPORTED = False
@@ -176,36 +199,21 @@ class TLSScanner(object):
 		self.SUPP_PROTO = sorted(self.SUPP_PROTO)
 		print "\t\t\tdone. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
-		return
 
 	def _scan_compression(self):
 		print "scanning for compression support...  ",
 		a = timeit.default_timer()
 		ver = self.SUPP_PROTO[::-1][0]
 
-		sock = TCPConnect(self.target)
-		packet = TLSRecord(version=TLSVersion.TLS_1_0)/\
-			TLSHandshake()/\
-			TLSClientHello(version=ver,
-					cipher_suites=range(0xfe)[::-1],
-					compression_methods=range(1,0xff),)
-		
-		sock.sendall(str(packet))
-		try:
-			resp = sock.recv(10240)
-		except socket.error, msg:
-			print "socket error: %s" % msg
-			return False
-		
-		sock.close()
-
-		ssl_p = SSL(resp)
-		if ssl_p.haslayer(TLSAlert):
-			if ssl_p[TLSAlert].description == 50:
+		#scan if compression is enabled (scan for every protocol?)
+		params = (self.target, range(0xff), ver, False, True)
+		resp = send_cipher_suite(params)
+		resp = SSL(resp[1])
+		if resp.haslayer(TLSAlert):
+			if resp[TLSAlert].description == 50:
 				#server does not support TLS compression
-				#print "compression disabled"
 				self.COMPRESSION_ENABLED = False
-		elif ssl_p.haslayer(TLSServerHello):
+		elif resp.haslayer(TLSServerHello):
 			#print "server sent hello back --> compression enabled"
 			self.COMPRESSION_ENABLED = True
 		print "\t\t\tdone. ",
@@ -240,38 +248,23 @@ class TLSScanner(object):
 			self.SECURE_RENEGOTIATION = False
 		print "\tdone. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
-
 	
-	#def _scan_accepted_ciphers(self):
-	#	if len(self.SUPP_PROTO) == 0:
-	#		self._scan_protocol_versions()
-	#	print "scanning ciphers..",
-	#	a = timeit.default_timer()
-	#	parameters = []
-	#	for protocol in self.SUPP_PROTO:
-	#		for cipher_suite in TLS_CIPHER_SUITES:
-	#			parameters.append((self.target,cipher_suite,protocol))
-#
-#		with ProcessPoolExecutor(max_workers=10) as executor:
-#			for result in executor.map(send_cipher_suite, parameters):
-#				if result != None:
-#					accepted_cipher = SSL(result[1])
-#					accepted_cipher = accepted_cipher.getlayer(TLSServerHello).cipher_suite
-#					
-#					if self.ACCEPTED_CIPHERS.has_key(result[0]):
-#						self.ACCEPTED_CIPHERS.get(result[0]).append(accepted_cipher)
-#					else:
-#						to_add = {result[0]:[accepted_cipher]}
-#						self.ACCEPTED_CIPHERS.update(to_add)
-#
-#		for i in self.ACCEPTED_CIPHERS.keys():
-#			self.ACCEPTED_CIPHERS_LEN += len(self.ACCEPTED_CIPHERS[i])
-#
-#		print "\t\t\t\t\tdone. ", 
-#		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
-#		self._order_cipher_suite_accepted()
-
-	
+	def _find_bad_ciphers(self, version, cipher_list):
+		
+		event_list = []
+		for cipher in cipher_list:
+			if TLS_CIPHER_SUITES[cipher].endswith("MD5"):
+				if Event.CODE.MD5 not in event_list:
+					event_list.append(Event.CODE.MD5)
+					self.EVENTS.append(Event(version + "_CIPHERS", Event.LEVEL.RED, "cipher (%s): MD5 is deprecated and considered insecure" % cipher))
+			if TLS_CIPHER_SUITES[cipher].endswith("SHA"):
+				if Event.CODE.SHA not in event_list:
+					event_list.append(Event.CODE.SHA)
+					self.EVENTS.append(Event(version + "_CIPHERS", Event.LEVEL.YELLOW, "SHA is deprecated and considered insecure"))
+			if "_CBC_" in TLS_CIPHER_SUITES[cipher]:
+				if Event.CODE.CBC not in event_list:
+					event_list.append(Event.CODE.CBC)
+					self.EVENTS.append(Event(version + "_CIPHERS", Event.LEVEL.YELLOW, "CBC block mode is susceptible to attacks"))
 	#
 	# Scan cipher suites accepted and ordered by server preference.
 	#
@@ -293,6 +286,7 @@ class TLSScanner(object):
 		with ProcessPoolExecutor(max_workers=len(self.SUPP_PROTO)) as executor:
 			for ordered_cipher_list in executor.map(order_cipher_suites, parameters):
 				self.ACCEPTED_ORDERED_CIPHERS.update(ordered_cipher_list[1])
+				self._find_bad_ciphers(ordered_cipher_list[0],ordered_cipher_list[1][ordered_cipher_list[0]])
 				self.ACCEPTED_CIPHERS_LEN += len(ordered_cipher_list[1][ordered_cipher_list[0]])
 		print "done. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
@@ -301,7 +295,7 @@ class TLSScanner(object):
 	# Printing result of the test.
 	#
 	def _printResults(self):
-		print "\n"
+		print "\n###########  PRINTING RESULTS  ###########\n"
 		for i in self.RESPONSES:
 			print i
 		
@@ -321,7 +315,12 @@ class TLSScanner(object):
 		for proto in self.ACCEPTED_ORDERED_CIPHERS.keys():
 			print "\n" + str(proto) + " supports " + str(len(self.ACCEPTED_ORDERED_CIPHERS[proto])) + " cipher suites.\n"
 			for cipher in self.ACCEPTED_ORDERED_CIPHERS[proto]:
-				print "Protocol: %s -> %s supported." % (proto,TLS_CIPHER_SUITES[cipher])
+				print "Protocol: %s -> %s (%s) supported." % (proto,TLS_CIPHER_SUITES[cipher], hex(cipher))
+			for ev in self.EVENTS:
+				if ev.subject == (proto+"_CIPHERS"):
+					printRed("[*]ALERT: ")
+					printOrange(ev.description) if ev.level == Event.LEVEL.RED else printWarning(ev.description)
+					print "\n",
 
 		if self.TLS_FALLBACK_SCSV_SUPPORTED != None:
 			print "\n\nTLS_FALLBACK_SCSV supported? ",
@@ -350,6 +349,7 @@ class TLSScanner(object):
 		self._scan_compression()
 		self._scan_secure_renegotiation()
 		self._scan_cipher_suite_accepted()
+		print "\n ---------- SCAN FINISHED ----------\n"
 
 
 def main():

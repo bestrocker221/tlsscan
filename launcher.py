@@ -34,10 +34,13 @@ def main():
 
 	#print args.website, args.port, args.fullscan, args.write, args.torify
 	start_time = timeit.default_timer()
-    
+	print args
 	scanner = TLSScanner(target=target)
+
+
 	if args.fullscan:
 		scanner._fullScan()
+		#scanner._scan_protocol_versions()
 		scanner._printResults()
 	if args.ciphers:
 		scanner._order_cipher_suite_accepted()
