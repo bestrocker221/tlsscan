@@ -4,8 +4,7 @@ from scapy.all import *
 import socket, timeit
 from colors import *
 from concurrent.futures import ProcessPoolExecutor, as_completed,ThreadPoolExecutor
-from time import sleep
-
+from time import sleep,time
 
 def checkConnection(target):
 		#test if target is reachable otherwise abort
@@ -30,7 +29,7 @@ def TCPConnect(target):
 
 ##
 # 
-# Function that deliver ClientHello and return the server response
+# Function that deliver ClientHello and return the server response if any
 #
 # parameters = ( target, cipher_code, TLSversion,
 #         tls_fallback_enabled, compression_enabled )
@@ -44,6 +43,8 @@ def send_cipher_suite(parameters):
 	ver = parameters[2]
 	tls_fallback = parameters[3]
 	compression = parameters[4]
+	secure_reneg = parameters[5]
+	time_to_wait = parameters[6]
 
 	if 0x5600 in cipher_code and not tls_fallback:
 		cipher_code.remove(0x5600)
@@ -55,11 +56,14 @@ def send_cipher_suite(parameters):
 
 	sock = TCPConnect(target)
 	packet = TLSRecord(version="TLS_1_0")/\
-			TLSHandshake()/\
-			TLSClientHello(version=ver,
+				TLSHandshake()/\
+				TLSClientHello(version=ver,
 							compression_methods=compression,
 							cipher_suites=cipher_code,)
 
+	if secure_reneg:
+		packet.getlayer(TLSClientHello).extensions = TLSExtension()/TLSExtRenegotiationInfo()
+	sleep(float(time_to_wait)/1000)
 	sock.sendall(str(packet))
 	try:
 		resp = sock.recv(10240)
@@ -90,17 +94,25 @@ def send_cipher_suite(parameters):
 def order_cipher_suites(parameters):
 	target = parameters[0]
 	cipher_code_list = parameters[1]
-	ver = parameters[2]
+	version = parameters[2]
+
+	time_to_wait = parameters[3]
+
 	ordered_cipher_list = {}
-	ordered_cipher_list.update({ver:[]})
+	ordered_cipher_list.update({version:[]})
 	go = True
 	while go:
-		resp = send_cipher_suite((target, cipher_code_list, ver, False, False))
+		#print "SCAN CIPHER TIME TO WAIT: " + str(time_to_wait)
+		resp = send_cipher_suite((target, cipher_code_list, version,
+					 SCAN_PARAMS.NO_TLS_FALLBACK,
+					 SCAN_PARAMS.NO_COMPRESSION,
+					 SCAN_PARAMS.NO_SECURE_RENEG,
+					 time_to_wait))
 		if resp != None:
 			resp = SSL(resp[1])
 			if resp.haslayer(TLSServerHello):
 				accepted_cipher = resp.getlayer(TLSServerHello).cipher_suite
-				ordered_cipher_list.get(ver).append(accepted_cipher)
+				ordered_cipher_list.get(version).append(accepted_cipher)
 				cipher_code_list.remove(accepted_cipher)
 			elif resp.haslayer(TLSAlert):
 				if resp.getlayer(TLSAlert).description == 40:
@@ -108,7 +120,7 @@ def order_cipher_suites(parameters):
 					go = False
 		else:
 			go = False
-	return (ver,ordered_cipher_list)
+	return (version,ordered_cipher_list)
 
 class Event(object):
 	class CODE:
@@ -126,41 +138,73 @@ class Event(object):
 		self.description = description
 		self.subject = subject
 
-class TLSScanner(object):
+class SCAN_PARAMS:
+		COMPRESSION = True
+		NO_COMPRESSION = False
+		TLS_FALLBACK = True
+		NO_TLS_FALLBACK = False
 
-	def __init__(self, target):
+		ALL_CIPHERS = range(0xff)
+
+		SECURE_RENEG = True
+		NO_SECURE_RENEG = False
+
+class TLSScanner(object):
+	def __init__(self, target, time_delay):
 		self.hostname = target[0]
 		self.target = (socket.gethostbyname(self.hostname), target[1] )
+
+		#timing variable
+		self.time_delay = time_delay
+		#function to calculate time to wait between requests
+		#self.should_sleep = lambda: float((self.time_delay - (time() -self.last_request_time)) / 1000)
 
 		self.PROTOS = [p for p in TLS_VERSIONS.values() if p.startswith("TLS_") or p.startswith("SSL_")]
 		self.PROTOS = sorted(self.PROTOS, reverse=True)
 		
-		self.cipher_suites_supported = []
-
-		self.ACCEPTED_ORDERED_CIPHERS = {}
+		self.server_certificate = None
+		
 		# Structure of ordered_cipher_list:
 		# Example
 		# { "TLS_1_0": [0x00,0x01], "TLS_1_1":[0x32], ...}
-		# 
+		# { proto: [supp_ciphers], ... }
+		self.accepted_ordered_ciphers = {}
 		self.ACCEPTED_CIPHERS_LEN = 0
+
 		self.TLS_FALLBACK_SCSV_SUPPORTED = None
 		self.SECURE_RENEGOTIATION = None
 		self.COMPRESSION_ENABLED = None
-		self.RESPONSES = []
-		#to define
 		
+		#to define
+		self.RESPONSES = []
+		
+		#list of ssl/tls supported protocol by the server
 		self.SUPP_PROTO = []
 
-		self.EVENTS = []
 		# Structure of events:
-		# {"TLS_1_1":[msg1, msg2], ... }
-		# {subject:msg[], .. } 
+		# Event() list
+		self.EVENTS = []
+		
 
 		if not checkConnection(self.target):
 			sys.exit(1)
 		print "TARGET: " + str(self.hostname) + " resolved to " + str(self.target[0]) +":"+ str(self.target[1])
 		print "Date of the test: " + str(datetime.datetime.now())
+		print "Timing: %d millisec between each request." % self.time_delay
 		print "\n"
+
+	def _analize_certificate(self):
+		print "analyzing server certificate...     ",
+		a = timeit.default_timer()
+		if self.server_certificate == None:
+			print "error"
+			sys.exit(1)
+
+		
+		
+
+		print "\t\t\tdone. ",
+		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 
 	def _scan_protocol_versions(self):
 		print "scanning for supported protocol...  ",
@@ -168,14 +212,19 @@ class TLSScanner(object):
 		for proto in self.PROTOS:
 			error = 0
 			#scan for accepted protocol and include SCSV fallback signal
-			params = (self.target, range(0xff), proto, True, False)
+			params = (self.target, range(0xff), proto, 
+				SCAN_PARAMS.TLS_FALLBACK,
+				SCAN_PARAMS.NO_COMPRESSION,
+				SCAN_PARAMS.NO_SECURE_RENEG,
+				self.time_delay)
+			
 			resp = send_cipher_suite(params)
+			
 			if resp == None:
 				error = 1
 			else:
 				resp = SSL(resp[1])
 				if resp.haslayer(TLSAlert):
-					#print "Version: %d" % resp[TLSRecord].version
 					if resp[TLSAlert].description == 86:
 						#signaling suite supported
 						#print "INAPPROPRIATE_FALLBACK --> SERVER SUPPORT SCSV SIGNALING"
@@ -186,7 +235,9 @@ class TLSScanner(object):
 					if resp[TLSAlert].description == 40:
 						#Handshake failure
 						error = 1
-
+				elif resp.haslayer(TLSServerHello) and self.server_certificate != None:
+					if resp.haslayer(TLSCertificate):
+						self.server_certificate = resp.getlayer(TLSCertificate)
 			if error != 0:
 				self.RESPONSES.append("TLSRecord version: TLS_1_0 Handshake version: %s not supported" % proto)
 			else:
@@ -206,7 +257,11 @@ class TLSScanner(object):
 		ver = self.SUPP_PROTO[::-1][0]
 
 		#scan if compression is enabled (scan for every protocol?)
-		params = (self.target, range(0xff), ver, False, True)
+		params = (self.target, range(0xff), ver,
+			SCAN_PARAMS.NO_TLS_FALLBACK,
+			SCAN_PARAMS.COMPRESSION,
+			SCAN_PARAMS.NO_SECURE_RENEG,
+			self.time_delay)
 		resp = send_cipher_suite(params)
 		resp = SSL(resp[1])
 		if resp.haslayer(TLSAlert):
@@ -223,26 +278,14 @@ class TLSScanner(object):
 		print "scanning for secure renegotiation extension..  ",
 		a = timeit.default_timer()
 		ver = self.SUPP_PROTO[::-1][0]
-
-		sock = TCPConnect(self.target)
-		packet = TLSRecord(version="TLS_1_0")/\
-				TLSHandshake()/\
-				TLSClientHello(version=ver,
-								compression_methods=0x00,
-								cipher_suites=range(0xff),
-								extensions=TLSExtension()/
-											TLSExtRenegotiationInfo(),)
-		sock.sendall(str(packet))
-		try:
-			resp = sock.recv(10240)
-		except socket.error, msg:
-			"socket error: " + msg
-
-		sock.close()
-
-		ssl_p = SSL(resp)
-		if ssl_p.haslayer(TLSExtRenegotiationInfo):
-			#ssl_p.getlayer(TLSExtRenegotiationInfo).show()
+		params = (self.target, range(0xff),ver,
+					SCAN_PARAMS.NO_TLS_FALLBACK,
+					SCAN_PARAMS.NO_COMPRESSION,
+					SCAN_PARAMS.SECURE_RENEG,
+					self.time_delay)
+		resp = send_cipher_suite(params)
+		resp = SSL(resp[1])
+		if resp.haslayer(TLSExtRenegotiationInfo):
 			self.SECURE_RENEGOTIATION = True
 		else:
 			self.SECURE_RENEGOTIATION = False
@@ -265,6 +308,10 @@ class TLSScanner(object):
 				if Event.CODE.CBC not in event_list:
 					event_list.append(Event.CODE.CBC)
 					self.EVENTS.append(Event(version + "_CIPHERS", Event.LEVEL.YELLOW, "CBC block mode is susceptible to attacks"))
+			#TODO
+			#
+			#
+			#
 	#
 	# Scan cipher suites accepted and ordered by server preference.
 	#
@@ -281,11 +328,11 @@ class TLSScanner(object):
 
 		parameters = []
 		for proto in cipher_scan_list.keys():
-			parameters.append((self.target, cipher_scan_list[proto], proto))
+			parameters.append((self.target, cipher_scan_list[proto], proto, self.time_delay))
 
 		with ProcessPoolExecutor(max_workers=len(self.SUPP_PROTO)) as executor:
 			for ordered_cipher_list in executor.map(order_cipher_suites, parameters):
-				self.ACCEPTED_ORDERED_CIPHERS.update(ordered_cipher_list[1])
+				self.accepted_ordered_ciphers.update(ordered_cipher_list[1])
 				self._find_bad_ciphers(ordered_cipher_list[0],ordered_cipher_list[1][ordered_cipher_list[0]])
 				self.ACCEPTED_CIPHERS_LEN += len(ordered_cipher_list[1][ordered_cipher_list[0]])
 		print "done. ",
@@ -312,9 +359,9 @@ class TLSScanner(object):
 		printGreen(str(self.ACCEPTED_CIPHERS_LEN))
 		print "/ %d ) Ordered by server preference." %(len(TLS_CIPHER_SUITES))
 
-		for proto in self.ACCEPTED_ORDERED_CIPHERS.keys():
-			print "\n" + str(proto) + " supports " + str(len(self.ACCEPTED_ORDERED_CIPHERS[proto])) + " cipher suites.\n"
-			for cipher in self.ACCEPTED_ORDERED_CIPHERS[proto]:
+		for proto in self.accepted_ordered_ciphers.keys():
+			print "\n" + str(proto) + " supports " + str(len(self.accepted_ordered_ciphers[proto])) + " cipher suites.\n"
+			for cipher in self.accepted_ordered_ciphers[proto]:
 				print "Protocol: %s -> %s (%s) supported." % (proto,TLS_CIPHER_SUITES[cipher], hex(cipher))
 			for ev in self.EVENTS:
 				if ev.subject == (proto+"_CIPHERS"):
