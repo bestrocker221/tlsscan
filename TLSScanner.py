@@ -6,8 +6,10 @@ from colors import *
 from concurrent.futures import ProcessPoolExecutor, as_completed,ThreadPoolExecutor
 from time import sleep,time
 
+#
+# Test if target is reachable otherwise abort
+#
 def checkConnection(target):
-		#test if target is reachable otherwise abort
 		try:
 			#socket.setdefaulttimeout(3)
 			socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(target)
@@ -18,6 +20,9 @@ def checkConnection(target):
 				print "\nHost or port unavailable\n"
 			return False
 
+#
+# Create and return a socket with the target ( hostname, port ) selected.
+#
 def TCPConnect(target):
 	sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
 	try:
@@ -27,7 +32,7 @@ def TCPConnect(target):
 		exit(1)
 	return sock
 
-##
+
 # 
 # Function that deliver ClientHello and return the server response if any
 #
@@ -36,8 +41,7 @@ def TCPConnect(target):
 # 
 # return (version, server_response) if accepted else None
 # 
-# #
-def send_cipher_suite(parameters):
+def send_client_hello(parameters):
 	target = parameters[0]
 	cipher_code = parameters[1]
 	ver = parameters[2]
@@ -78,7 +82,7 @@ def send_cipher_suite(parameters):
 	else:
 		return None
 
-##
+
 #
 # Function for multiprocessing request to server
 # 
@@ -90,7 +94,6 @@ def send_cipher_suite(parameters):
 # Example
 # { "TLS_1_0": [0x00,0x01]}
 # 
-# #
 def order_cipher_suites(parameters):
 	target = parameters[0]
 	cipher_code_list = parameters[1]
@@ -103,7 +106,7 @@ def order_cipher_suites(parameters):
 	go = True
 	while go:
 		#print "SCAN CIPHER TIME TO WAIT: " + str(time_to_wait)
-		resp = send_cipher_suite((target, cipher_code_list, version,
+		resp = send_client_hello((target, cipher_code_list, version,
 					 SCAN_PARAMS.NO_TLS_FALLBACK,
 					 SCAN_PARAMS.NO_COMPRESSION,
 					 SCAN_PARAMS.NO_SECURE_RENEG,
@@ -139,15 +142,8 @@ class Event(object):
 		self.subject = subject
 
 class SCAN_PARAMS:
-		COMPRESSION = True
-		NO_COMPRESSION = False
-		TLS_FALLBACK = True
-		NO_TLS_FALLBACK = False
-
-		ALL_CIPHERS = range(0xff)
-
-		SECURE_RENEG = True
-		NO_SECURE_RENEG = False
+		COMPRESSION = TLS_FALLBACK = SECURE_RENEG = True
+		NO_COMPRESSION =  NO_TLS_FALLBACK = NO_SECURE_RENEG = False
 
 class TLSScanner(object):
 	def __init__(self, target, time_delay):
@@ -188,9 +184,11 @@ class TLSScanner(object):
 
 		if not checkConnection(self.target):
 			sys.exit(1)
+
 		print "TARGET: " + str(self.hostname) + " resolved to " + str(self.target[0]) +":"+ str(self.target[1])
 		print "Date of the test: " + str(datetime.datetime.now())
-		print "Timing: %d millisec between each request." % self.time_delay
+		if self.time_delay > 0:
+			print "Timing: %d millisec between each request." % self.time_delay
 		print "\n"
 
 	def _analize_certificate(self):
@@ -218,7 +216,7 @@ class TLSScanner(object):
 				SCAN_PARAMS.NO_SECURE_RENEG,
 				self.time_delay)
 			
-			resp = send_cipher_suite(params)
+			resp = send_client_hello(params)
 			
 			if resp == None:
 				error = 1
@@ -262,7 +260,7 @@ class TLSScanner(object):
 			SCAN_PARAMS.COMPRESSION,
 			SCAN_PARAMS.NO_SECURE_RENEG,
 			self.time_delay)
-		resp = send_cipher_suite(params)
+		resp = send_client_hello(params)
 		resp = SSL(resp[1])
 		if resp.haslayer(TLSAlert):
 			if resp[TLSAlert].description == 50:
@@ -283,7 +281,7 @@ class TLSScanner(object):
 					SCAN_PARAMS.NO_COMPRESSION,
 					SCAN_PARAMS.SECURE_RENEG,
 					self.time_delay)
-		resp = send_cipher_suite(params)
+		resp = send_client_hello(params)
 		resp = SSL(resp[1])
 		if resp.haslayer(TLSExtRenegotiationInfo):
 			self.SECURE_RENEGOTIATION = True
@@ -398,7 +396,7 @@ class TLSScanner(object):
 		self._scan_cipher_suite_accepted()
 		print "\n ---------- SCAN FINISHED ----------\n"
 
-
+'''	
 def main():
 	target = (sys.argv[1], int(sys.argv[2]))
 
@@ -415,3 +413,4 @@ if __name__ == '__main__':
 		print ("Usage: <host> <port>")
 		exit(1)
 	main()
+'''
