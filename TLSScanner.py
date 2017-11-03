@@ -1,10 +1,11 @@
-import logging, datetime
+import logging, datetime, socket, timeit, binascii, ssl, collections
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 from scapy.all import *
-import socket, timeit
 from colors import *
-from concurrent.futures import ProcessPoolExecutor, as_completed,ThreadPoolExecutor
 from time import sleep,time
+from concurrent.futures import ProcessPoolExecutor, as_completed,ThreadPoolExecutor
+from OpenSSL import crypto
+from asn1crypto.x509 import Certificate
 
 #
 # Test if target is reachable otherwise abort
@@ -37,7 +38,8 @@ def TCPConnect(target):
 # Function that deliver ClientHello and return the server response if any
 #
 # parameters = ( target, cipher_code, TLSversion,
-#         tls_fallback_enabled, compression_enabled )
+#         tls_fallback_enabled, compression_enabled,
+#         secure_renegotiation, time_to_wait )
 # 
 # return (version, server_response) if accepted else None
 # 
@@ -191,14 +193,104 @@ class TLSScanner(object):
 			print "Timing: %d millisec between each request." % self.time_delay
 		print "\n"
 
-	def _analize_certificate(self):
+	def _analyze_certificate(self):
+		if len(self.SUPP_PROTO) == 0:
+			self._scan_protocol_versions()
 		print "analyzing server certificate...     ",
 		a = timeit.default_timer()
+
 		if self.server_certificate == None:
 			print "error"
 			sys.exit(1)
 
+		tbs_cert = self.server_certificate.native["tbs_certificate"]
+		sig_alg = self.server_certificate.native["signature_algorithm"]
+		sig_value = self.server_certificate.native["signature_value"]
+
+		print "\n"
+		print "Version:\t" + str(tbs_cert["version"])
+		print "Serial Number:\t" + str(tbs_cert["serial_number"])
+		print "Signature Algorithm:\t" + tbs_cert["signature"]["algorithm"]
+		print "Issuer:"
+		for i in tbs_cert["issuer"]:
+			print "\t",i,":", tbs_cert["issuer"][i]
+		print "Validity:"
+		for i in tbs_cert["validity"]:
+			print "\t",i,":", tbs_cert["validity"][i]
+		print "Subject:"
+		for i in tbs_cert["subject"]:
+			print "\t",i,":", tbs_cert["subject"][i]
+		print "Subject public key info:"
+		for i in tbs_cert["subject_public_key_info"]:
+			print "\t",i,":"
+			for a in tbs_cert["subject_public_key_info"][i]:
+				print "\t\t",a,":", tbs_cert["subject_public_key_info"][i][a]
+		print "Extensions:"
+		for ext in tbs_cert["extensions"]:
+			#print "EXT", ext
+			#print "Extension name: ", ext[0]["extn_id"]
+			for field in ext:
+				if field == "extn_id":
+					print "\tExtension name: ", ext[field]
+				elif field == "critical":
+					print "\tCritical:", field, ":", ext[field]
+				elif field == "extn_value":
+					print "\tValue:"
+					for value in ext[field]:
+						#print "\t\t", value
+						if type(ext[field]) == set:
+							print "L"
+							print "\t\t",
+							for val in value:
+								print val,",",
+						elif type(ext[field]) == collections.OrderedDict:
+							print "O"
+							print "\t\t",
+							for val in value:
+								print val,":", value[val]
+						elif type(ext[field]) == str:
+							print "S"
+							print value
+						#print "\t\t", v, ":", ext[field][v]
+
+			print "\n"
+				#print "\t", field, ":", ext[field]
+
+
+		'''self.server_certificate = crypto.load_certificate(crypto.FILETYPE_PEM, self.server_certificate)
 		
+		print "version: " + str(self.server_certificate.get_version())
+		if self.server_certificate.has_expired():
+  			print "[-] Certificate has expired."
+  			return False
+  		else: 
+  			print "Certificate not expired"
+
+  		before = datetime.datetime.strptime(self.server_certificate.get_notBefore(), "%Y%m%d%H%M%SZ")
+		after  = datetime.datetime.strptime(self.server_certificate.get_notAfter(), "%Y%m%d%H%M%SZ")
+		print "[+] Valid:\t{0} - {1}".format(before.strftime('%B %d, %Y'), after.strftime('%B %d, %Y'))
+		print "SN: " + str(self.server_certificate.get_serial_number())
+		print "Issuer: " 
+		for i in self.server_certificate.get_issuer().get_components():
+			print i
+
+		print "Pub Key type: " + str(self.server_certificate.get_pubkey().type())
+		print "Pub Key bits: " + str(self.server_certificate.get_pubkey().bits())
+		print "Sig algo: " + self.server_certificate.get_signature_algorithm()
+		print "Subject: "
+		for i in self.server_certificate.get_subject().get_components():
+			print i
+			#if 'CN' in i[0]:
+			#	printRed("CERTIFICATE COMMON NAME MISMATCH") if (i[1] != self.hostname) else printGreen("COMMON NAME MATCH")
+
+
+		import re
+		for i in range(self.server_certificate.get_extension_count()):
+			print self.server_certificate.get_extension(i).get_short_name() ,
+			try:
+				print self.server_certificate.get_extension(i).get_data()
+			except TypeError, msg:
+				print "error " + str(msg)'''
 		
 
 		print "\t\t\tdone. ",
@@ -233,9 +325,10 @@ class TLSScanner(object):
 					if resp[TLSAlert].description == 40:
 						#Handshake failure
 						error = 1
-				elif resp.haslayer(TLSServerHello) and self.server_certificate != None:
-					if resp.haslayer(TLSCertificate):
-						self.server_certificate = resp.getlayer(TLSCertificate)
+				elif resp.haslayer(TLSCertificate) and self.server_certificate == None:
+					self.server_certificate = Certificate.load(bytes(resp.getlayer(TLSCertificate).data))
+					#print self.server_certificate.subject.native
+
 			if error != 0:
 				self.RESPONSES.append("TLSRecord version: TLS_1_0 Handshake version: %s not supported" % proto)
 			else:
@@ -283,10 +376,11 @@ class TLSScanner(object):
 					self.time_delay)
 		resp = send_client_hello(params)
 		resp = SSL(resp[1])
-		if resp.haslayer(TLSExtRenegotiationInfo):
-			self.SECURE_RENEGOTIATION = True
-		else:
-			self.SECURE_RENEGOTIATION = False
+		#if resp.haslayer(TLSExtRenegotiationInfo):
+		#	self.SECURE_RENEGOTIATION = True
+		#else:
+		#	self.SECURE_RENEGOTIATION = False
+		self.SECURE_RENEGOTIATION = True if resp.haslayer(TLSExtRenegotiationInfo) else False
 		print "\tdone. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 	
