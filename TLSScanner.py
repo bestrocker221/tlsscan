@@ -168,7 +168,7 @@ class TLSScanner(object):
 		self.PROTOS = sorted(self.PROTOS, reverse=True)
 		
 		self.server_certificate = None
-		
+		self.certificate_chain = []
 		# Structure of ordered_cipher_list:
 		# Example
 		# { "TLS_1_0": [0x00,0x01], "TLS_1_1":[0x32], ...}
@@ -226,19 +226,12 @@ class TLSScanner(object):
 		resp = SSL(resp)
 		exit(0)
 
-	def _analyze_certificate(self):
-		if len(self.SUPP_PROTO) == 0:
-			self._scan_protocol_versions()
-		print "analyzing server certificate...     ",
-		a = timeit.default_timer()
-
-		if self.server_certificate == None:
-			print "error"
-			sys.exit(1)
-
-		tbs_cert = self.server_certificate.native["tbs_certificate"]
-		sig_alg = self.server_certificate.native["signature_algorithm"]
-		sig_value = self.server_certificate.native["signature_value"]
+	def _analize_certificate(self, certificate):
+		#tbs_cert = self.server_certificate.native["tbs_certificate"]
+		#sig_alg = self.server_certificate.native["signature_algorithm"]
+		#sig_value = self.server_certificate.native["signature_value"]
+		tbs_cert = certificate.native["tbs_certificate"]
+		alt_name_list = []
 
 		print "\n"
 		print "Version:\t" + str(tbs_cert["version"])
@@ -293,21 +286,55 @@ class TLSScanner(object):
 					'''
 		#exit(1)
 		#
+		#
+		print "SUBJECT ALT NAME: "
+		for ext in tbs_cert["extensions"]:
+			if ext["extn_id"] == "subject_alt_name":
+				for alt_name in ext["extn_value"]:
+					alt_name_list.append(alt_name)
 		print "IS VALID? ",
 		nb = datetime.datetime.strptime(str(tbs_cert["validity"]["not_before"])[:-6], '%Y-%m-%d %H:%M:%S')
 		na = datetime.datetime.strptime(str(tbs_cert["validity"]["not_after"])[:-6], '%Y-%m-%d %H:%M:%S')
 		now = datetime.datetime.strptime(str(datetime.datetime.now())[:-7], '%Y-%m-%d %H:%M:%S')
 		
-		printGreen("YES") if (now > nb and now < na) else printRed("NO")
+		printGreen("YES, untill " + str(na)) if (now > nb and now < na) else printRed("NO")
 
-		print "\nHostname match CN?",
-		printGreen("YES") if (self.hostname == tbs_cert["subject"]["common_name"]) else printRed("NO")
-		print "\n(Requested) ", self.hostname, " == ", tbs_cert["subject"]["common_name"], " (Certificate)"
+		print "\nHostname match CN or SUBJECT_ALTERNATIVE_NAME?",
+		printGreen("YES") if (self.hostname in tbs_cert["subject"]["common_name"] or 
+			self.hostname in alt_name_list) else printRed("NO")
+		print "\n(Requested) ", self.hostname, " (Certificate)",tbs_cert["subject"]["common_name"]
+		print "Hostname matches with alternative name: ",
+		printGreen(self.hostname) if (self.hostname in alt_name_list) else printRed("Nothing")
+		print "\n"
 
+	def analyze_certificates(self):
+		if len(self.SUPP_PROTO) == 0:
+			self._scan_protocol_versions()
+		print "analyzing server certificates...     ",
+		a = timeit.default_timer()
+
+		if self.server_certificate == None:
+			print "error"
+			sys.exit(1)
+
+		for cert in self.certificate_chain:
+			#print cert.native
+			self._analize_certificate(cert)
+		
 		
 		
 		print "\t\t\tdone. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
+
+	def _save_cert_chain(self, TLSCertificateList):
+		for cert in TLSCertificateList.certificates:
+			c = Certificate.load(bytes(cert.data))
+			self.certificate_chain.append(c)
+
+		self.server_certificate = self.certificate_chain[0]
+		#print self.server_certificate
+		#exit(1)
+
 
 	def _scan_protocol_versions(self):
 		print "scanning for supported protocol...  ",
@@ -340,7 +367,9 @@ class TLSScanner(object):
 						#Handshake failure
 						error = 1
 				elif resp.haslayer(TLSCertificate) and self.server_certificate == None:
-					self.server_certificate = Certificate.load(bytes(resp.getlayer(TLSCertificate).data))
+					#self.server_certificate = Certificate.load(bytes(resp.getlayer(TLSCertificate).data))
+					#self.certificate_chain = resp.getlayer(TLSCertificateList)#.certificates
+					self._save_cert_chain(resp.getlayer(TLSCertificateList))
 					#print self.server_certificate.subject.native
 
 			if error != 0:

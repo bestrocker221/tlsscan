@@ -64,7 +64,7 @@ def main():
 		scanner._order_cipher_suite_accepted()
 		scanner._printResults()
 	elif args.certscan:
-		scanner._analyze_certificate()
+		scanner.analyze_certificates()
 		scanner._printResults()
 	elif args.suppproto:
 		scanner._scan_protocol_versions()
