@@ -44,6 +44,7 @@ def TCPConnect(target):
 # return (version, server_response) if accepted else None
 # 
 def send_client_hello(parameters):
+	serve_name = parameters[7]
 	target = parameters[0]
 	cipher_code = parameters[1]
 	ver = parameters[2]
@@ -65,10 +66,15 @@ def send_client_hello(parameters):
 				TLSHandshake()/\
 				TLSClientHello(version=ver,
 							compression_methods=compression,
-							cipher_suites=cipher_code,)
+							cipher_suites=cipher_code,
+							extensions = [
+									TLSExtension()/\
+										TLSExtServerNameIndication(server_names=
+											[TLSServerName(data=serve_name)],)
+								])
 
 	if secure_reneg:
-		packet.getlayer(TLSClientHello).extensions = TLSExtension()/TLSExtRenegotiationInfo()
+		packet.getlayer(TLSClientHello).extensions.append(TLSExtension()/TLSExtRenegotiationInfo())
 	sleep(float(time_to_wait)/1000)
 	sock.sendall(str(packet))
 	try:
@@ -100,8 +106,8 @@ def order_cipher_suites(parameters):
 	target = parameters[0]
 	cipher_code_list = parameters[1]
 	version = parameters[2]
-
 	time_to_wait = parameters[3]
+	server_name = parameters[4]
 
 	ordered_cipher_list = {}
 	ordered_cipher_list.update({version:[]})
@@ -112,7 +118,8 @@ def order_cipher_suites(parameters):
 					 SCAN_PARAMS.NO_TLS_FALLBACK,
 					 SCAN_PARAMS.NO_COMPRESSION,
 					 SCAN_PARAMS.NO_SECURE_RENEG,
-					 time_to_wait))
+					 time_to_wait,
+					 server_name))
 		if resp != None:
 			resp = SSL(resp[1])
 			if resp.haslayer(TLSServerHello):
@@ -148,10 +155,10 @@ class SCAN_PARAMS:
 		NO_COMPRESSION =  NO_TLS_FALLBACK = NO_SECURE_RENEG = False
 
 class TLSScanner(object):
-	def __init__(self, target, time_delay):
+	def __init__(self, target, time_delay, verbose):
 		self.hostname = target[0]
 		self.target = (socket.gethostbyname(self.hostname), target[1] )
-
+		self.verbose = verbose
 		#timing variable
 		self.time_delay = time_delay
 		#function to calculate time to wait between requests
@@ -192,6 +199,32 @@ class TLSScanner(object):
 		if self.time_delay > 0:
 			print "Timing: %d millisec between each request." % self.time_delay
 		print "\n"
+		#self.bogus()
+
+
+	def bogus(self):
+		sock = TCPConnect(self.target)
+		packet = TLSRecord(version="TLS_1_0")/\
+					TLSHandshake()/\
+					TLSClientHello(version="TLS_1_2",
+								compression_methods=0x00,
+								cipher_suites=range(0xff),
+								extensions = [
+									TLSExtension()/\
+										TLSExtServerNameIndication(server_names=
+											[TLSServerName(data="mycalitrip.ddns.net")],)
+								])
+		#packet.getlayer(TLSClientHello).extensions = TLSExtension()/\
+		#		TLSExtServerNameIndication(server_names=[TLSServerName(data="mycalitrip.ddns.net")])
+		sock.sendall(str(packet))
+		try:
+			resp = sock.recv(10240)
+		except socket.error as msg:
+			"socket error: " + str(msg.errno)
+			return None
+		sock.close()
+		resp = SSL(resp)
+		exit(0)
 
 	def _analyze_certificate(self):
 		if len(self.SUPP_PROTO) == 0:
@@ -223,76 +256,56 @@ class TLSScanner(object):
 		print "Subject public key info:"
 		for i in tbs_cert["subject_public_key_info"]:
 			print "\t",i,":"
-			for a in tbs_cert["subject_public_key_info"][i]:
-				print "\t\t",a,":", tbs_cert["subject_public_key_info"][i][a]
+			for info in tbs_cert["subject_public_key_info"][i]:
+				print "\t\t",info,":", tbs_cert["subject_public_key_info"][i][info]
 		print "Extensions:"
 		for ext in tbs_cert["extensions"]:
-			#print "EXT", ext
 			#print "Extension name: ", ext[0]["extn_id"]
 			for field in ext:
 				if field == "extn_id":
 					print "\tExtension name: ", ext[field]
 				elif field == "critical":
-					print "\tCritical:", field, ":", ext[field]
+					print "\t", field, ":", ext[field]
+				'''
 				elif field == "extn_value":
 					print "\tValue:"
 					for value in ext[field]:
 						#print "\t\t", value
-						if type(ext[field]) == set:
-							print "L"
-							print "\t\t",
-							for val in value:
-								print val,",",
+						if type(ext[field]) == set or type(ext[field])==list:
+							if type(value) == collections.OrderedDict:
+								for in_val in value:
+									if type(value[in_val]) == list:
+										for in_in_val in value[in_val]:
+											#print "\t\t",in_in_val,":", value[in_val][in_in_val]
+											for in_in_in_val in in_in_val:
+												print "\t\t", in_in_in_val ,":",in_in_val[in_in_in_val]
+									else:
+										print "\t\t",in_val,":", value[in_val]
+							else:
+								print "\t\t",
+								print value,
 						elif type(ext[field]) == collections.OrderedDict:
-							print "O"
 							print "\t\t",
-							for val in value:
-								print val,":", value[val]
-						elif type(ext[field]) == str:
-							print "S"
-							print value
+							print value,":", ext[field][value]
+					if type(ext[field]) == str:
+						print "\t\t", ext[field]
 						#print "\t\t", v, ":", ext[field][v]
-
-			print "\n"
-				#print "\t", field, ":", ext[field]
-
-
-		'''self.server_certificate = crypto.load_certificate(crypto.FILETYPE_PEM, self.server_certificate)
+					'''
+		#exit(1)
+		#
+		print "IS VALID? ",
+		nb = datetime.datetime.strptime(str(tbs_cert["validity"]["not_before"])[:-6], '%Y-%m-%d %H:%M:%S')
+		na = datetime.datetime.strptime(str(tbs_cert["validity"]["not_after"])[:-6], '%Y-%m-%d %H:%M:%S')
+		now = datetime.datetime.strptime(str(datetime.datetime.now())[:-7], '%Y-%m-%d %H:%M:%S')
 		
-		print "version: " + str(self.server_certificate.get_version())
-		if self.server_certificate.has_expired():
-  			print "[-] Certificate has expired."
-  			return False
-  		else: 
-  			print "Certificate not expired"
+		printGreen("YES") if (now > nb and now < na) else printRed("NO")
 
-  		before = datetime.datetime.strptime(self.server_certificate.get_notBefore(), "%Y%m%d%H%M%SZ")
-		after  = datetime.datetime.strptime(self.server_certificate.get_notAfter(), "%Y%m%d%H%M%SZ")
-		print "[+] Valid:\t{0} - {1}".format(before.strftime('%B %d, %Y'), after.strftime('%B %d, %Y'))
-		print "SN: " + str(self.server_certificate.get_serial_number())
-		print "Issuer: " 
-		for i in self.server_certificate.get_issuer().get_components():
-			print i
+		print "\nHostname match CN?",
+		printGreen("YES") if (self.hostname == tbs_cert["subject"]["common_name"]) else printRed("NO")
+		print "\n(Requested) ", self.hostname, " == ", tbs_cert["subject"]["common_name"], " (Certificate)"
 
-		print "Pub Key type: " + str(self.server_certificate.get_pubkey().type())
-		print "Pub Key bits: " + str(self.server_certificate.get_pubkey().bits())
-		print "Sig algo: " + self.server_certificate.get_signature_algorithm()
-		print "Subject: "
-		for i in self.server_certificate.get_subject().get_components():
-			print i
-			#if 'CN' in i[0]:
-			#	printRed("CERTIFICATE COMMON NAME MISMATCH") if (i[1] != self.hostname) else printGreen("COMMON NAME MATCH")
-
-
-		import re
-		for i in range(self.server_certificate.get_extension_count()):
-			print self.server_certificate.get_extension(i).get_short_name() ,
-			try:
-				print self.server_certificate.get_extension(i).get_data()
-			except TypeError, msg:
-				print "error " + str(msg)'''
 		
-
+		
 		print "\t\t\tdone. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 
@@ -306,7 +319,8 @@ class TLSScanner(object):
 				SCAN_PARAMS.TLS_FALLBACK,
 				SCAN_PARAMS.NO_COMPRESSION,
 				SCAN_PARAMS.NO_SECURE_RENEG,
-				self.time_delay)
+				self.time_delay,
+				self.hostname)
 			
 			resp = send_client_hello(params)
 			
@@ -352,7 +366,8 @@ class TLSScanner(object):
 			SCAN_PARAMS.NO_TLS_FALLBACK,
 			SCAN_PARAMS.COMPRESSION,
 			SCAN_PARAMS.NO_SECURE_RENEG,
-			self.time_delay)
+			self.time_delay,
+			self.hostname)
 		resp = send_client_hello(params)
 		resp = SSL(resp[1])
 		if resp.haslayer(TLSAlert):
@@ -373,7 +388,8 @@ class TLSScanner(object):
 					SCAN_PARAMS.NO_TLS_FALLBACK,
 					SCAN_PARAMS.NO_COMPRESSION,
 					SCAN_PARAMS.SECURE_RENEG,
-					self.time_delay)
+					self.time_delay,
+					self.hostname)
 		resp = send_client_hello(params)
 		resp = SSL(resp[1])
 		#if resp.haslayer(TLSExtRenegotiationInfo):
@@ -420,7 +436,7 @@ class TLSScanner(object):
 
 		parameters = []
 		for proto in cipher_scan_list.keys():
-			parameters.append((self.target, cipher_scan_list[proto], proto, self.time_delay))
+			parameters.append((self.target, cipher_scan_list[proto], proto, self.time_delay, self.hostname))
 
 		with ProcessPoolExecutor(max_workers=len(self.SUPP_PROTO)) as executor:
 			for ordered_cipher_list in executor.map(order_cipher_suites, parameters):
@@ -447,19 +463,20 @@ class TLSScanner(object):
 			else:
 				printGreen(i)
 
-		print "\n\nAccepted cipher-suites (",
-		printGreen(str(self.ACCEPTED_CIPHERS_LEN))
-		print "/ %d ) Ordered by server preference." %(len(TLS_CIPHER_SUITES))
+		if self.ACCEPTED_CIPHERS_LEN > 0:
+			print "\n\nAccepted cipher-suites (",
+			printGreen(str(self.ACCEPTED_CIPHERS_LEN))
+			print "/ %d ) Ordered by server preference." %(len(TLS_CIPHER_SUITES))
 
-		for proto in self.accepted_ordered_ciphers.keys():
-			print "\n" + str(proto) + " supports " + str(len(self.accepted_ordered_ciphers[proto])) + " cipher suites.\n"
-			for cipher in self.accepted_ordered_ciphers[proto]:
-				print "Protocol: %s -> %s (%s) supported." % (proto,TLS_CIPHER_SUITES[cipher], hex(cipher))
-			for ev in self.EVENTS:
-				if ev.subject == (proto+"_CIPHERS"):
-					printRed("[*]ALERT: ")
-					printOrange(ev.description) if ev.level == Event.LEVEL.RED else printWarning(ev.description)
-					print "\n",
+			for proto in self.accepted_ordered_ciphers.keys():
+				print "\n" + str(proto) + " supports " + str(len(self.accepted_ordered_ciphers[proto])) + " cipher suites.\n"
+				for cipher in self.accepted_ordered_ciphers[proto]:
+					print "Protocol: %s -> %s (%s) supported." % (proto,TLS_CIPHER_SUITES[cipher], hex(cipher))
+				for ev in self.EVENTS:
+					if ev.subject == (proto+"_CIPHERS"):
+						printRed("[*]ALERT: ")
+						printOrange(ev.description) if ev.level == Event.LEVEL.RED else printWarning(ev.description)
+						print "\n",
 
 		if self.TLS_FALLBACK_SCSV_SUPPORTED != None:
 			print "\n\nTLS_FALLBACK_SCSV supported? ",

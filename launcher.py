@@ -19,6 +19,7 @@ parser.add_argument('--ciphers', action='store_true', help='start a scan of serv
 parser.add_argument('--suppproto', action='store_true', help='perform only a scan of supported protocols version.')
 parser.add_argument('--certscan', action='store_true', help='perform only a scan of the server certificate.')
 parser.add_argument('-d', '--delay', type=int, action='store', default=0, help="wait N milliseconds between each request.")
+parser.add_argument('-vv', '--verbose', action='store_true', default=False, help="show verbose information.")
 parser.add_argument('-w', '--write',  action='store',
 	#default="output_"+str(datetime.datetime.now()).replace(" ","_")+".txt", 
 	help='insert filename to write test output.')
@@ -48,7 +49,7 @@ def main():
 	print args
 	print "\n"
 
-	scanner = TLSScanner(target=target, time_delay=args.delay)
+	scanner = TLSScanner(target=target, time_delay=args.delay, verbose=args.verbose)
 
 	sniffer_process = None
 	if args.sniff:
