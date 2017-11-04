@@ -61,18 +61,18 @@ def main():
 		sniffer_process.start()
 
 	if args.ciphers:
-		scanner._order_cipher_suite_accepted()
-		scanner._printResults()
+		scanner.scan_cipher_suite_accepted()
+		scanner.print_results()
 	elif args.certscan:
 		scanner.analyze_certificates()
-		scanner._printResults()
+		scanner.print_results()
 	elif args.suppproto:
-		scanner._scan_protocol_versions()
-		scanner._printResults()
+		scanner.scan_protocol_versions()
+		scanner.print_results()
 	if args.fullscan:
-		scanner._fullScan()
+		scanner.full_scan()
 		#scanner._scan_protocol_versions()
-		scanner._printResults()
+		scanner.print_results()
 
 	if sniffer_process != None:
 		sniffer_process.terminate() 

@@ -39,7 +39,7 @@ def TCPConnect(target):
 #
 # parameters = ( target, cipher_code, TLSversion,
 #         tls_fallback_enabled, compression_enabled,
-#         secure_renegotiation, time_to_wait )
+#         secure_renegotiation, time_to_wait, serve_name )
 # 
 # return (version, server_response) if accepted else None
 # 
@@ -94,7 +94,7 @@ def send_client_hello(parameters):
 #
 # Function for multiprocessing request to server
 # 
-# parameters = ( target, cipher_code_list, TLSversion )
+# parameters = ( target, cipher_code_list, TLSversion, timetowait, server_name )
 # 
 # return (version, server_response) if accepted else None
 # 
@@ -226,107 +226,23 @@ class TLSScanner(object):
 		resp = SSL(resp)
 		exit(0)
 
-	def _analize_certificate(self, certificate):
-		#tbs_cert = self.server_certificate.native["tbs_certificate"]
-		#sig_alg = self.server_certificate.native["signature_algorithm"]
-		#sig_value = self.server_certificate.native["signature_value"]
-		tbs_cert = certificate.native["tbs_certificate"]
-		alt_name_list = []
-
-		print "\n"
-		print "Version:\t" + str(tbs_cert["version"])
-		print "Serial Number:\t" + str(tbs_cert["serial_number"])
-		print "Signature Algorithm:\t" + tbs_cert["signature"]["algorithm"]
-		print "Issuer:"
-		for i in tbs_cert["issuer"]:
-			print "\t",i,":", tbs_cert["issuer"][i]
-		print "Validity:"
-		for i in tbs_cert["validity"]:
-			print "\t",i,":", tbs_cert["validity"][i]
-		print "Subject:"
-		for i in tbs_cert["subject"]:
-			print "\t",i,":", tbs_cert["subject"][i]
-		print "Subject public key info:"
-		for i in tbs_cert["subject_public_key_info"]:
-			print "\t",i,":"
-			for info in tbs_cert["subject_public_key_info"][i]:
-				print "\t\t",info,":", tbs_cert["subject_public_key_info"][i][info]
-		print "Extensions:"
-		for ext in tbs_cert["extensions"]:
-			#print "Extension name: ", ext[0]["extn_id"]
-			for field in ext:
-				if field == "extn_id":
-					print "\tExtension name: ", ext[field]
-				elif field == "critical":
-					print "\t", field, ":", ext[field]
-				'''
-				elif field == "extn_value":
-					print "\tValue:"
-					for value in ext[field]:
-						#print "\t\t", value
-						if type(ext[field]) == set or type(ext[field])==list:
-							if type(value) == collections.OrderedDict:
-								for in_val in value:
-									if type(value[in_val]) == list:
-										for in_in_val in value[in_val]:
-											#print "\t\t",in_in_val,":", value[in_val][in_in_val]
-											for in_in_in_val in in_in_val:
-												print "\t\t", in_in_in_val ,":",in_in_val[in_in_in_val]
-									else:
-										print "\t\t",in_val,":", value[in_val]
-							else:
-								print "\t\t",
-								print value,
-						elif type(ext[field]) == collections.OrderedDict:
-							print "\t\t",
-							print value,":", ext[field][value]
-					if type(ext[field]) == str:
-						print "\t\t", ext[field]
-						#print "\t\t", v, ":", ext[field][v]
-					'''
-		#exit(1)
-		#
-		#
-		print "SUBJECT ALT NAME: "
-		for ext in tbs_cert["extensions"]:
-			if ext["extn_id"] == "subject_alt_name":
-				for alt_name in ext["extn_value"]:
-					alt_name_list.append(alt_name)
-		print "IS VALID? ",
-		nb = datetime.datetime.strptime(str(tbs_cert["validity"]["not_before"])[:-6], '%Y-%m-%d %H:%M:%S')
-		na = datetime.datetime.strptime(str(tbs_cert["validity"]["not_after"])[:-6], '%Y-%m-%d %H:%M:%S')
-		now = datetime.datetime.strptime(str(datetime.datetime.now())[:-7], '%Y-%m-%d %H:%M:%S')
-		
-		printGreen("YES, untill " + str(na)) if (now > nb and now < na) else printRed("NO")
-
-		print "\nHostname match CN or SUBJECT_ALTERNATIVE_NAME?",
-		printGreen("YES") if (self.hostname in tbs_cert["subject"]["common_name"] or 
-			self.hostname in alt_name_list) else printRed("NO")
-		print "\n(Requested) ", self.hostname, " (Certificate)",tbs_cert["subject"]["common_name"]
-		print "Hostname matches with alternative name: ",
-		printGreen(self.hostname) if (self.hostname in alt_name_list) else printRed("Nothing")
-		print "\n"
-
+	
 	def analyze_certificates(self):
 		if len(self.SUPP_PROTO) == 0:
-			self._scan_protocol_versions()
-		print "analyzing server certificates...     ",
-		a = timeit.default_timer()
+			self.scan_protocol_versions()
 
 		if self.server_certificate == None:
-			print "error"
+			print "error, try again"
 			sys.exit(1)
 
-		for cert in self.certificate_chain:
-			#print cert.native
-			self._analize_certificate(cert)
+		#for cert in self.certificate_chain:
+			#self._analize_certificate(cert)
 		
-		
-		
-		print "\t\t\tdone. ",
-		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 
 	def _save_cert_chain(self, TLSCertificateList):
+		print "loading certificate chain...         ",
+		a = timeit.default_timer()
+
 		for cert in TLSCertificateList.certificates:
 			c = Certificate.load(bytes(cert.data))
 			self.certificate_chain.append(c)
@@ -334,11 +250,15 @@ class TLSScanner(object):
 		self.server_certificate = self.certificate_chain[0]
 		#print self.server_certificate
 		#exit(1)
+		
+		print "\t\t\tdone. ",
+		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 
 
-	def _scan_protocol_versions(self):
+	def scan_protocol_versions(self):
 		print "scanning for supported protocol...  ",
 		a = timeit.default_timer()
+		cert_list = None
 		for proto in self.PROTOS:
 			error = 0
 			#scan for accepted protocol and include SCSV fallback signal
@@ -366,11 +286,11 @@ class TLSScanner(object):
 					if resp[TLSAlert].description == 40:
 						#Handshake failure
 						error = 1
-				elif resp.haslayer(TLSCertificate) and self.server_certificate == None:
-					#self.server_certificate = Certificate.load(bytes(resp.getlayer(TLSCertificate).data))
-					#self.certificate_chain = resp.getlayer(TLSCertificateList)#.certificates
-					self._save_cert_chain(resp.getlayer(TLSCertificateList))
-					#print self.server_certificate.subject.native
+				elif resp.haslayer(TLSCertificateList) and cert_list == None:
+					
+					cert_list = resp.getlayer(TLSCertificateList)
+					#self._save_cert_chain(resp.getlayer(TLSCertificateList))
+					
 
 			if error != 0:
 				self.RESPONSES.append("TLSRecord version: TLS_1_0 Handshake version: %s not supported" % proto)
@@ -384,6 +304,11 @@ class TLSScanner(object):
 		self.SUPP_PROTO = sorted(self.SUPP_PROTO)
 		print "\t\t\tdone. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
+		if cert_list != None:
+			self._save_cert_chain(cert_list)
+		else:
+			print "error.. server didnt send certificate"
+			exit(1)
 
 	def _scan_compression(self):
 		print "scanning for compression support...  ",
@@ -452,9 +377,9 @@ class TLSScanner(object):
 	#
 	# Scan cipher suites accepted and ordered by server preference.
 	#
-	def _scan_cipher_suite_accepted(self):
+	def scan_cipher_suite_accepted(self):
 		if len(self.SUPP_PROTO) == 0:
-			self._scan_protocol_versions()
+			self.scan_protocol_versions()
 		print "ordering cipher suites based on server preference...   ",
 		
 		cipher_scan_list = {}
@@ -475,14 +400,81 @@ class TLSScanner(object):
 		print "done. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 
+	def _print_certificate_info(self, certificate):
+		#tbs_cert = self.server_certificate.native["tbs_certificate"]
+		#sig_alg = self.server_certificate.native["signature_algorithm"]
+		#sig_value = self.server_certificate.native["signature_value"]
+		tbs_cert = certificate.native["tbs_certificate"]
+
+		print "\n################# CERTIFICATE INFORMATION for %s #################\n" % tbs_cert["subject"]["common_name"]
+		
+		if self.verbose:
+			print "Version:\t" + str(tbs_cert["version"])
+			print "Serial Number:\t" + str(tbs_cert["serial_number"])
+			print "Signature Algorithm:\t" + tbs_cert["signature"]["algorithm"]
+			print "Issuer:"
+			for i in tbs_cert["issuer"]:
+				print "\t",i,":", tbs_cert["issuer"][i]
+			print "Validity:"
+			for i in tbs_cert["validity"]:
+				print "\t",i,":", tbs_cert["validity"][i]
+			print "Subject:"
+			for i in tbs_cert["subject"]:
+				print "\t",i,":", tbs_cert["subject"][i]
+			print "Subject public key info:"
+			for i in tbs_cert["subject_public_key_info"]:
+				print "\t",i,":"
+				for info in tbs_cert["subject_public_key_info"][i]:
+					print "\t\t",info,":", tbs_cert["subject_public_key_info"][i][info]
+			print "Extensions:"
+			for i in certificate["tbs_certificate"]["extensions"]:
+				print "\tName: ", i["extn_id"].native + ",", 
+				if bool(i["critical"]):
+					printWarning("critical\n")
+				else:
+					print "non-critical"
+
+			print "\nCertificate signature scheme: ", certificate.signature_algo
+			#print "Certificate signature (hexlified):\n\t", binascii.hexlify(certificate.signature)
+
+
+		print "Is certificate EXPIRED? ",
+		nb = datetime.datetime.strptime(str(tbs_cert["validity"]["not_before"])[:-6], '%Y-%m-%d %H:%M:%S')
+		na = datetime.datetime.strptime(str(tbs_cert["validity"]["not_after"])[:-6], '%Y-%m-%d %H:%M:%S')
+		now = datetime.datetime.strptime(str(datetime.datetime.now())[:-7], '%Y-%m-%d %H:%M:%S')
+		printGreen("NO, valid until " + str(na)) if (now > nb and now < na) else printRed("YES, expired on " + str(na))
+
+		print "\nHostname match CN or SUBJECT_ALTERNATIVE_NAME?",
+		if not certificate.ca:
+			printGreen("YES") if (self.hostname in tbs_cert["subject"]["common_name"] or 
+				self.hostname in certificate.valid_domains) else printRed("NO")
+		print "\n(Requested) ", self.hostname, " (Certificate)",tbs_cert["subject"]["common_name"]
+		if not certificate.ca:
+			print "Hostname matches with alternative name: ",
+			printGreen(self.hostname) if (self.hostname in certificate.valid_domains) else printRed("Nothing")
+		print "\nIs a CA certificate?",
+		print "YES" if certificate.ca else "NO"
+		print "Is a self-signed certificate? ", certificate.self_signed.upper()
+		
+		if self.verbose:
+			print "CRL url: ", certificate.crl_distribution_points[0].url if (len(certificate.crl_distribution_points) > 0) else "NO CLR"
+			print "OSCP url: ",certificate.ocsp_urls[0]
+			print "Valid domains for certificate: ", certificate.valid_domains if (len(certificate.valid_domains) > 0) else "None"
+
+
 	#
 	# Printing result of the test.
 	#
-	def _printResults(self):
+	def print_results(self):
 		print "\n###########  PRINTING RESULTS  ###########\n"
+		
 		for i in self.RESPONSES:
 			print i
-		
+		#printing certificate informations
+		print "\nTotal number of certificates received: ", len(self.certificate_chain)
+		for cert in self.certificate_chain:
+			self._print_certificate_info(cert)
+		#printing supported protocols
 		print "\nSUPPORTED PROTOCOLS FOR HANDSHAKE: ",
 		for i in self.SUPP_PROTO:
 			if i=="SSL_3_0" or i=="SSL_2_0":
@@ -491,7 +483,7 @@ class TLSScanner(object):
 				printWarning(i)
 			else:
 				printGreen(i)
-
+		#printing cipher suites accepted
 		if self.ACCEPTED_CIPHERS_LEN > 0:
 			print "\n\nAccepted cipher-suites (",
 			printGreen(str(self.ACCEPTED_CIPHERS_LEN))
@@ -506,13 +498,15 @@ class TLSScanner(object):
 						printRed("[*]ALERT: ")
 						printOrange(ev.description) if ev.level == Event.LEVEL.RED else printWarning(ev.description)
 						print "\n",
-
+		#printing support for SCSV
 		if self.TLS_FALLBACK_SCSV_SUPPORTED != None:
 			print "\n\nTLS_FALLBACK_SCSV supported? ",
 			printGreen("True") if self.TLS_FALLBACK_SCSV_SUPPORTED else printRed("False")
+		#printing support for compression
 		if self.COMPRESSION_ENABLED != None:
 			print "\n\nTLS COMPRESSION enabled? ",
 			printGreen("False") if not self.COMPRESSION_ENABLED else printRed("True")
+		#printing support for secure renegotiation extension
 		if self.SECURE_RENEGOTIATION != None:
 			print "\n\nSECURE RENEGOTIATION supported?",
 			printGreen("True") if self.SECURE_RENEGOTIATION else printRed("False")
@@ -527,13 +521,13 @@ class TLSScanner(object):
 	#
 	# Start a comprehensive scan of the given website.
 	#
-	def _fullScan(self):
+	def full_scan(self):
 		print "\nStarting SSL/TLS test on %s --> %s:%d" % (self.hostname,self.target[0],self.target[1])
 		print "TYPE SCAN:  FULL SCAN\n\n"
-		self._scan_protocol_versions()
+		self.scan_protocol_versions()
 		self._scan_compression()
 		self._scan_secure_renegotiation()
-		self._scan_cipher_suite_accepted()
+		self.scan_cipher_suite_accepted()
 		print "\n ---------- SCAN FINISHED ----------\n"
 
 '''	
