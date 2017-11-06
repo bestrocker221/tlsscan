@@ -58,16 +58,20 @@ def main():
 		sniffer_process.start()
 
 	if args.ciphers:
-		scanner.scan_cipher_suite_accepted()
+		#scanner.scan_cipher_suite_accepted()
+		scanner.scan(TLSScanner.MODE.CIPHERS)
 		scanner.print_results()
 	elif args.certscan:
-		scanner.analyze_certificates()
+		#scanner.analyze_certificates()
+		scanner.scan(TLSScanner.MODE.CERTSCAN)
 		scanner.print_results()
 	elif args.suppproto:
-		scanner.scan_protocol_versions()
+		#scanner.scan_protocol_versions()
+		scanner.scan(TLSScanner.MODE.SUPPROTO)
 		scanner.print_results()
 	if args.fullscan:
-		scanner.full_scan()
+		##scanner.full_scan()
+		scanner.scan(TLSScanner.MODE.FULLSCAN)
 		#scanner._scan_protocol_versions()
 		scanner.print_results()
 

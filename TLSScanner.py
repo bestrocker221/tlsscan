@@ -155,11 +155,18 @@ class SCAN_PARAMS:
 		NO_COMPRESSION =  NO_TLS_FALLBACK = NO_SECURE_RENEG = False
 
 class TLSScanner(object):
+	class MODE:
+		FULLSCAN = "FULLSCAN",
+		CERTSCAN = "CERTSCAN",
+		SUPPROTO = "SUPPROTO",
+		CIPHERS  = "CIPHERS"
+
 	def __init__(self, target, time_delay, verbose, to_file):
 		self.hostname = target[0]
 		self.target = (socket.gethostbyname(self.hostname), target[1] )
 		self.verbose = verbose
 		self.to_file = to_file
+		self.scan_mode = None
 		#timing variable
 		self.time_delay = time_delay
 		#function to calculate time to wait between requests
@@ -191,7 +198,9 @@ class TLSScanner(object):
 		# Event() list
 		self.EVENTS = []
 
+		self.bad_sni_check = None
 		self.hsts = None
+		self.http_status_code = None
 		
 		if not checkConnection(self.target):
 			sys.exit(1)
@@ -202,28 +211,18 @@ class TLSScanner(object):
 			print "Timing: %d millisec between each request." % self.time_delay
 		print "\n"
 		#self.bogus()
-		self. _check_hsts()
-		self.print_results()
+		#self. _check_hsts()
+		#self.print_results()
+		#self.scan_protocol_versions()
+		#self._check_bad_sni_response()
 
 	def _textColor(self, txt, color):
 		return txt if (self.to_file != None) else textColor(txt,color)
 
-	def _check_hsts(self):
-		print "looking for HSTS header...           ",
-		a = timeit.default_timer()
-		headers = {
-    		'cache-control': "no-cache"
-		}
-		url = "https://" + self.hostname
-		response = requests.request("HEAD",url, headers=headers)
-		self.hsts = response.headers["Strict-Transport-Security"] if ("Strict-Transport-Security" in response.headers.keys()) else None
-		print "\t\t\tdone. ",
-		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
-
 	def bogus(self):
 		print "OOOOOOOOOOOOOOOOOO"
-		print textColor("ciao\nciao", bcolors.RED)
-		exit(0)
+		
+		#exit(0)
 
 		sock = TCPConnect(self.target)
 		packet = TLSRecord(version="TLS_1_0")/\
@@ -246,10 +245,11 @@ class TLSScanner(object):
 			return None
 		sock.close()
 		resp = SSL(resp)
+		print textColor("ciao\nciao", bcolors.RED)
 		exit(0)
 
 	
-	def analyze_certificates(self):
+	def _analyze_certificates(self):
 		if len(self.SUPP_PROTO) == 0:
 			self.scan_protocol_versions()
 
@@ -276,6 +276,27 @@ class TLSScanner(object):
 		print "\t\t\tdone. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 
+	def _check_bad_sni_response(self):
+		print "checking bad sni response...         ",
+		a = timeit.default_timer()
+		bogus_hostname = "www.bogus-address.com"
+
+		ver = self.SUPP_PROTO[::-1][0]
+		params = (self.target, range(0xff),ver , 
+				SCAN_PARAMS.TLS_FALLBACK,
+				SCAN_PARAMS.NO_COMPRESSION,
+				SCAN_PARAMS.NO_SECURE_RENEG,
+				self.time_delay,
+				bogus_hostname)
+		ver,resp = send_client_hello(params)
+		if resp != None:
+			resp = SSL(resp)
+			if resp.haslayer(TLSCertificate):
+				cert = Certificate.load(bytes(resp.getlayer(TLSCertificate).data))
+				cert_hostnames = cert.valid_domains
+				self.bad_sni_check = bogus_hostname in cert_hostnames
+		print "\t\t\tdone. ",
+		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 
 	def scan_protocol_versions(self):
 		print "scanning for supported protocol...  ",
@@ -309,11 +330,8 @@ class TLSScanner(object):
 						#Handshake failure
 						error = 1
 				elif resp.haslayer(TLSCertificateList) and cert_list == None:
-					
 					cert_list = resp.getlayer(TLSCertificateList)
 					#self._save_cert_chain(resp.getlayer(TLSCertificateList))
-					
-
 			if error != 0:
 				self.RESPONSES.append("TLSRecord version: TLS_1_0 Handshake version: %s not supported" % proto)
 			else:
@@ -422,6 +440,28 @@ class TLSScanner(object):
 		print "done. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 
+	def _check_hsts(self):
+		print "looking for HSTS header...           ",
+		a = timeit.default_timer()
+		headers = {
+    		'cache-control': "no-cache"
+		}
+		url = "https://" + self.hostname
+		response = requests.request("HEAD", url, headers=headers)
+		self.hsts = response.headers["Strict-Transport-Security"] if ("Strict-Transport-Security" in response.headers.keys()) else None
+		print "\t\t\tdone. ",
+		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
+
+	def _print_hsts_results(self):
+		print "\nHTTP Strict Transport Security enabled? ",
+		if self.hsts != None:
+			print self._textColor("YES", bcolors.OKGREEN)
+			print "\tHeader: ", self._textColor(self.hsts, bcolors.OKGREEN)
+			print "\tInclude subdomains? ", self._textColor("YES", bcolors.OKGREEN) if ("includesubdomains" in self.hsts.lower()) else self._textColor("NO", bcolors.FAIL)
+			print "\tPreloaded? ", self._textColor("YES", bcolors.OKGREEN) if ("preload" in self.hsts.lower()) else self._textColor("NO", bcolors.FAIL)
+		else:
+			print self._textColor("NO", bcolors.FAIL)
+
 	def _print_certificate_info(self, certificate):
 		#tbs_cert = self.server_certificate.native["tbs_certificate"]
 		#sig_alg = self.server_certificate.native["signature_algorithm"]
@@ -458,7 +498,7 @@ class TLSScanner(object):
 
 			print "\nCertificate signature scheme: ", certificate.signature_algo
 			#print "Certificate signature (hexlified):\n\t", binascii.hexlify(certificate.signature)
-		
+
 		print "Is certificate EXPIRED? ",
 		nb = datetime.datetime.strptime(str(tbs_cert["validity"]["not_before"])[:-6], '%Y-%m-%d %H:%M:%S')
 		na = datetime.datetime.strptime(str(tbs_cert["validity"]["not_after"])[:-6], '%Y-%m-%d %H:%M:%S')
@@ -490,7 +530,7 @@ class TLSScanner(object):
 			print "OSCP url: ",certificate.ocsp_urls[0]
 			print "Valid domains for certificate: ", certificate.valid_domains if (len(certificate.valid_domains) > 0) else "None"
 
-
+	#printing supported protocols
 	def _print_supproto(self):
 		print "\n################# PROTOCOLS SUPPORTED #################\n"
 		print "SUPPORTED PROTOCOLS FOR HANDSHAKE: ",
@@ -502,6 +542,7 @@ class TLSScanner(object):
 			else:
 				print self._textColor(i, bcolors.OKGREEN),
 
+	#printing cipher suites accepted
 	def _print_ciphers(self):
 		print "\n\n################## CIPHER SUITES #################"
 		if self.ACCEPTED_CIPHERS_LEN > 0:
@@ -521,15 +562,9 @@ class TLSScanner(object):
 						else:
 							print self._textColor(ev.description, bcolors.WARNING)
 
-	def _print_hsts_results(self):
-		print "HTTP Strict Transport Security enabled? ",
-		if self.hsts != None:
-			print self._textColor("YES", bcolors.OKGREEN)
-			print "\tHeader: ", self._textColor(self.hsts, bcolors.OKGREEN)
-			print "\tInclude subdomains? ", self._textColor("YES", bcolors.OKGREEN) if ("includesubdomains" in self.hsts.lower()) else self._textColor("NO", bcolors.FAIL)
-			print "\tPreloaded? ", self._textColor("YES", bcolors.OKGREEN) if ("preload" in self.hsts.lower()) else self._textColor("NO", bcolors.FAIL)
-		else:
-			print self._textColor("NO", bcolors.FAIL)
+	def _print_bad_sni_check(self):
+		print "\nIncorrect Server Name Indication alert? ",
+		print self._textColor("NO", bcolors.RED) if not self.bad_sni_check else self._textColor("YES", bcolors.OKGREEN)
 
 	#
 	# Printing result of the test.
@@ -546,10 +581,14 @@ class TLSScanner(object):
 		
 		#printing supported protocols
 		self._print_supproto()
-		
+
 		#printing cipher suites accepted
-		self._print_ciphers()
+		#TODO make prints based on mode
+		if self.scan_mode == TLSScanner.MODE.CIPHERS or self.scan_mode == TLSScanner.MODE.FULLSCAN:
+			self._print_ciphers()
 		
+
+		print "\n\n################## SECURITY OPTIONS #################"
 		#printing support for SCSV
 		if self.TLS_FALLBACK_SCSV_SUPPORTED != None:
 			print "\nTLS_FALLBACK_SCSV supported? ",
@@ -564,9 +603,14 @@ class TLSScanner(object):
 			print self._textColor("True", bcolors.OKGREEN) if self.SECURE_RENEGOTIATION else self._textColor("False", bcolors.RED)
 		
 		#printing HSTS header info
-		self._print_hsts_results()
+		if self.hsts != None:
+			self._print_hsts_results()
+		#printing full support for sni
+		if self.bad_sni_check != None:
+			self._print_bad_sni_check()
 		
 		#ATTACKS
+		print "\n\n################## ATTACKS #################"
 		print "\nPOODLE attack: ",
 		if "SSL_3_0" in self.SUPP_PROTO:
 			print self._textColor("potentially vulnerable", bcolors.RED)
@@ -580,14 +624,28 @@ class TLSScanner(object):
 	# Start a comprehensive scan of the given website.
 	#
 	def full_scan(self):
-		print "\nStarting SSL/TLS test on %s --> %s:%d" % (self.hostname,self.target[0],self.target[1])
-		print "TYPE SCAN:  FULL SCAN\n\n"
 		self.scan_protocol_versions()
 		self._scan_compression()
 		self._scan_secure_renegotiation()
-		self.scan_cipher_suite_accepted()
-		print "\n ---------- SCAN FINISHED ----------\n"
+		#self.scan_cipher_suite_accepted()
+		
+		self._check_bad_sni_response()
+		self._check_hsts()
 
+	def scan(self, mode):
+		print "\nStarting SSL/TLS test on %s --> %s:%d" % (self.hostname,self.target[0],self.target[1])
+		print "TYPE SCAN:  %s\n\n" % mode
+		self.scan_mode = mode
+		if mode == TLSScanner.MODE.FULLSCAN:
+			self.full_scan()
+		elif mode == TLSScanner.MODE.CIPHERS:
+			self.scan_cipher_suite_accepted()
+		elif mode == TLSScanner.MODE.SUPPROTO:
+			self.scan_protocol_versions()
+		elif mode == TLSScanner.MODE.CERTSCAN:
+			self._analyze_certificates()
+
+		print "\n ---------- SCAN FINISHED ----------\n"
 '''	
 def main():
 	target = (sys.argv[1], int(sys.argv[2]))
