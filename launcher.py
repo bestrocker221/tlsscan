@@ -2,7 +2,6 @@ import sys, datetime, argparse, timeit, signal, os
 from TLSScanner import TLSScanner
 from  multiprocessing import Process
 from scapy.all import *
-
 parser = argparse.ArgumentParser(usage= sys.argv[0]+ ' <website> [options]', 
 	description='SSL/TLS website passive analyzer.',
 	epilog='''
@@ -48,9 +47,7 @@ def main():
 	start_time = timeit.default_timer()
 	print args
 	print "\n"
-
-	scanner = TLSScanner(target=target, time_delay=args.delay, verbose=args.verbose)
-
+	scanner = TLSScanner(target=target, time_delay=args.delay, verbose=args.verbose, to_file = args.write)
 	sniffer_process = None
 	if args.sniff:
 		if os.geteuid() != 0:

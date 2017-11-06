@@ -22,3 +22,6 @@ def printBlue(txt):
 	print bcolors.OKBLUE + txt + bcolors.ENDC,
 def printHeader(txt):
 	print bcolors.HEADER+ txt + bcolors.ENDC,
+
+def textColor(txt, color):
+    return color + txt + bcolors.ENDC
