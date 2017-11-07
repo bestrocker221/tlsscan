@@ -1,4 +1,4 @@
-import logging, datetime, socket, timeit, binascii, collections, requests
+import socks, logging, datetime, socket, timeit, binascii, collections, requests
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 from scapy.all import *
 from colors import *
@@ -6,11 +6,10 @@ from time import sleep,time
 from concurrent.futures import ProcessPoolExecutor, as_completed,ThreadPoolExecutor
 from OpenSSL import crypto
 from asn1crypto.x509 import Certificate
-
 #
 # Test if target is reachable otherwise abort
 #
-def checkConnection(target):
+def checkConnection(target, torify):
 		try:
 			#socket.setdefaulttimeout(3)
 			socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(target)
@@ -24,7 +23,7 @@ def checkConnection(target):
 #
 # Create and return a socket with the target ( hostname, port ) selected.
 #
-def TCPConnect(target):
+def TCPConnect(target, torify):
 	sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
 	try:
 		sock.connect(target)
@@ -32,8 +31,6 @@ def TCPConnect(target):
 		print "Couldnt connect with the socket-server: %s\n" % msg
 		exit(1)
 	return sock
-
-
 # 
 # Function that deliver ClientHello and return the server response if any
 #
@@ -53,6 +50,8 @@ def send_client_hello(parameters):
 	secure_reneg = parameters[5]
 	time_to_wait = parameters[6]
 
+	torify = parameters[8]
+
 	if 0x5600 in cipher_code and not tls_fallback:
 		cipher_code.remove(0x5600)
 	else:
@@ -61,7 +60,7 @@ def send_client_hello(parameters):
 	#cipher_code.remove(0x5600) if (0x5600 in cipher_code and not tls_fallback) else cipher_code.append(0x5600)
 	compression = range(1,0xff) if compression else 0x00
 
-	sock = TCPConnect(target)
+	sock = TCPConnect(target, torify)
 	packet = TLSRecord(version="TLS_1_0")/\
 				TLSHandshake()/\
 				TLSClientHello(version=ver,
@@ -109,6 +108,8 @@ def order_cipher_suites(parameters):
 	time_to_wait = parameters[3]
 	server_name = parameters[4]
 
+	torify = parameters[5]
+
 	ordered_cipher_list = {}
 	ordered_cipher_list.update({version:[]})
 	go = True
@@ -119,7 +120,8 @@ def order_cipher_suites(parameters):
 					 SCAN_PARAMS.NO_COMPRESSION,
 					 SCAN_PARAMS.NO_SECURE_RENEG,
 					 time_to_wait,
-					 server_name))
+					 server_name,
+					 torify))
 		if resp != None:
 			resp = SSL(resp[1])
 			if resp.haslayer(TLSServerHello):
@@ -161,16 +163,19 @@ class TLSScanner(object):
 		SUPPROTO = "SUPPROTO",
 		CIPHERS  = "CIPHERS"
 
-	def __init__(self, target, time_delay, verbose, to_file):
+	def __init__(self, target, time_delay, verbose, to_file, torify):
 		self.hostname = target[0]
-		self.target = (socket.gethostbyname(self.hostname), target[1] )
 		self.verbose = verbose
 		self.to_file = to_file
+
+		self.requests_session = requests.session()
+		self.torify = torify
+		if self.torify:
+			self._set_tor_proxy()
+		self.target = (socket.gethostbyname(self.hostname), target[1])
 		self.scan_mode = None
 		#timing variable
 		self.time_delay = time_delay
-		#function to calculate time to wait between requests
-		#self.should_sleep = lambda: float((self.time_delay - (time() -self.last_request_time)) / 1000)
 
 		self.PROTOS = [p for p in TLS_VERSIONS.values() if p.startswith("TLS_") or p.startswith("SSL_")]
 		self.PROTOS = sorted(self.PROTOS, reverse=True)
@@ -187,7 +192,10 @@ class TLSScanner(object):
 		self.TLS_FALLBACK_SCSV_SUPPORTED = None
 		self.SECURE_RENEGOTIATION = None
 		self.COMPRESSION_ENABLED = None
-		
+		self.bad_sni_check = None
+		self.hsts = None
+		self.http_status_code = None
+
 		#to define
 		self.RESPONSES = []
 		
@@ -198,11 +206,7 @@ class TLSScanner(object):
 		# Event() list
 		self.EVENTS = []
 
-		self.bad_sni_check = None
-		self.hsts = None
-		self.http_status_code = None
-		
-		if not checkConnection(self.target):
+		if not checkConnection(self.target, self.torify):
 			sys.exit(1)
 
 		print "TARGET: " + str(self.hostname) + " resolved to " + str(self.target[0]) +":"+ str(self.target[1])
@@ -215,6 +219,26 @@ class TLSScanner(object):
 		#self.print_results()
 		#self.scan_protocol_versions()
 		#self._check_bad_sni_response()
+	
+
+	def _set_tor_proxy(self):
+		print "Checking tor proxy connectivity...   "
+		if not checkConnection(("127.0.0.1", 9050), False):
+			print "TOR PROXY NOT RUNNING\n"
+			exit(1)
+		else:
+			socks.set_default_proxy(socks.PROXY_TYPE_SOCKS5, "127.0.0.1", 9050)
+			print "TOR PROXY RUNNING ON PORT 9050\n"
+			#setting global socket setting to use socks.socksocket
+			socket.socket = socks.socksocket
+			self.requests_session.proxies = {
+				'http':'socks5h://127.0.0.1:9050',
+				'https':'socks5h://127.0.0.1:9050'
+			}
+			#url to get ext ip
+			url = "http://icanhazip.com"
+			response = self.requests_session.get(url)
+			print "TOR IP: ", response.text
 
 	def _textColor(self, txt, color):
 		return txt if (self.to_file != None) else textColor(txt,color)
@@ -224,7 +248,7 @@ class TLSScanner(object):
 		
 		#exit(0)
 
-		sock = TCPConnect(self.target)
+		sock = TCPConnect(self.target, self.torify)
 		packet = TLSRecord(version="TLS_1_0")/\
 					TLSHandshake()/\
 					TLSClientHello(version="TLS_1_2",
@@ -251,15 +275,11 @@ class TLSScanner(object):
 	
 	def _analyze_certificates(self):
 		if len(self.SUPP_PROTO) == 0:
-			self.scan_protocol_versions()
+			self._scan_protocol_versions()
 
 		if self.server_certificate == None:
 			print "error, try again"
 			sys.exit(1)
-
-		#for cert in self.certificate_chain:
-			#self._analize_certificate(cert)
-		
 
 	def _save_cert_chain(self, TLSCertificateList):
 		print "loading certificate chain...         ",
@@ -287,7 +307,8 @@ class TLSScanner(object):
 				SCAN_PARAMS.NO_COMPRESSION,
 				SCAN_PARAMS.NO_SECURE_RENEG,
 				self.time_delay,
-				bogus_hostname)
+				bogus_hostname,
+				self.torify)
 		ver,resp = send_client_hello(params)
 		if resp != None:
 			resp = SSL(resp)
@@ -298,7 +319,7 @@ class TLSScanner(object):
 		print "\t\t\tdone. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 
-	def scan_protocol_versions(self):
+	def _scan_protocol_versions(self):
 		print "scanning for supported protocol...  ",
 		a = timeit.default_timer()
 		cert_list = None
@@ -310,10 +331,10 @@ class TLSScanner(object):
 				SCAN_PARAMS.NO_COMPRESSION,
 				SCAN_PARAMS.NO_SECURE_RENEG,
 				self.time_delay,
-				self.hostname)
+				self.hostname,
+				self.torify)
 			
 			resp = send_client_hello(params)
-			
 			if resp == None:
 				error = 1
 			else:
@@ -344,6 +365,7 @@ class TLSScanner(object):
 		self.SUPP_PROTO = sorted(self.SUPP_PROTO)
 		print "\t\t\tdone. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
+
 		if cert_list != None:
 			self._save_cert_chain(cert_list)
 		else:
@@ -361,9 +383,10 @@ class TLSScanner(object):
 			SCAN_PARAMS.COMPRESSION,
 			SCAN_PARAMS.NO_SECURE_RENEG,
 			self.time_delay,
-			self.hostname)
-		resp = send_client_hello(params)
-		resp = SSL(resp[1])
+			self.hostname,
+			self.torify)
+		ver, resp = send_client_hello(params)
+		resp = SSL(resp)
 		if resp.haslayer(TLSAlert):
 			if resp[TLSAlert].description == 50:
 				#server does not support TLS compression
@@ -383,19 +406,16 @@ class TLSScanner(object):
 					SCAN_PARAMS.NO_COMPRESSION,
 					SCAN_PARAMS.SECURE_RENEG,
 					self.time_delay,
-					self.hostname)
-		resp = send_client_hello(params)
-		resp = SSL(resp[1])
-		#if resp.haslayer(TLSExtRenegotiationInfo):
-		#	self.SECURE_RENEGOTIATION = True
-		#else:
-		#	self.SECURE_RENEGOTIATION = False
+					self.hostname,
+					self.torify)
+		ver, resp = send_client_hello(params)
+		resp = SSL(resp)
 		self.SECURE_RENEGOTIATION = True if resp.haslayer(TLSExtRenegotiationInfo) else False
 		print "\tdone. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 	
+	
 	def _find_bad_ciphers(self, version, cipher_list):
-		
 		event_list = []
 		for cipher in cipher_list:
 			if TLS_CIPHER_SUITES[cipher].endswith("MD5"):
@@ -417,9 +437,9 @@ class TLSScanner(object):
 	#
 	# Scan cipher suites accepted and ordered by server preference.
 	#
-	def scan_cipher_suite_accepted(self):
+	def _scan_cipher_suite_accepted(self):
 		if len(self.SUPP_PROTO) == 0:
-			self.scan_protocol_versions()
+			self._scan_protocol_versions()
 		print "ordering cipher suites based on server preference...   ",
 		
 		cipher_scan_list = {}
@@ -430,7 +450,7 @@ class TLSScanner(object):
 
 		parameters = []
 		for proto in cipher_scan_list.keys():
-			parameters.append((self.target, cipher_scan_list[proto], proto, self.time_delay, self.hostname))
+			parameters.append((self.target, cipher_scan_list[proto], proto, self.time_delay, self.hostname, self.torify))
 
 		with ProcessPoolExecutor(max_workers=len(self.SUPP_PROTO)) as executor:
 			for version, ordered_cipher_list in executor.map(order_cipher_suites, parameters):
@@ -440,6 +460,10 @@ class TLSScanner(object):
 		print "done. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 
+	#
+	# Make a HEAD request to the server and analyze headers returned.
+	# Look for HTTP Strict Transport Security header
+	#
 	def _check_hsts(self):
 		print "looking for HSTS header...           ",
 		a = timeit.default_timer()
@@ -447,11 +471,14 @@ class TLSScanner(object):
     		'cache-control': "no-cache"
 		}
 		url = "https://" + self.hostname
-		response = requests.request("HEAD", url, headers=headers)
+		response = self.requests_session.head(url, headers=headers)
 		self.hsts = response.headers["Strict-Transport-Security"] if ("Strict-Transport-Security" in response.headers.keys()) else None
 		print "\t\t\tdone. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 
+	#
+	# Print result for HSTS header request.
+	#
 	def _print_hsts_results(self):
 		print "\nHTTP Strict Transport Security enabled? ",
 		if self.hsts != None:
@@ -462,6 +489,9 @@ class TLSScanner(object):
 		else:
 			print self._textColor("NO", bcolors.FAIL)
 
+	#
+	# Print certificate information.
+	#
 	def _print_certificate_info(self, certificate):
 		#tbs_cert = self.server_certificate.native["tbs_certificate"]
 		#sig_alg = self.server_certificate.native["signature_algorithm"]
@@ -530,7 +560,9 @@ class TLSScanner(object):
 			print "OSCP url: ",certificate.ocsp_urls[0]
 			print "Valid domains for certificate: ", certificate.valid_domains if (len(certificate.valid_domains) > 0) else "None"
 
-	#printing supported protocols
+	#
+	# Printing supported protocols.
+	#
 	def _print_supproto(self):
 		print "\n################# PROTOCOLS SUPPORTED #################\n"
 		print "SUPPORTED PROTOCOLS FOR HANDSHAKE: ",
@@ -542,7 +574,9 @@ class TLSScanner(object):
 			else:
 				print self._textColor(i, bcolors.OKGREEN),
 
-	#printing cipher suites accepted
+	#
+	# Printing cipher suites accepted.
+	# 
 	def _print_ciphers(self):
 		print "\n\n################## CIPHER SUITES #################"
 		if self.ACCEPTED_CIPHERS_LEN > 0:
@@ -562,6 +596,9 @@ class TLSScanner(object):
 						else:
 							print self._textColor(ev.description, bcolors.WARNING)
 
+	#
+	# Print if server sent back an alert for a bad SNI.
+	#
 	def _print_bad_sni_check(self):
 		print "\nIncorrect Server Name Indication alert? ",
 		print self._textColor("NO", bcolors.RED) if not self.bad_sni_check else self._textColor("YES", bcolors.OKGREEN)
@@ -574,6 +611,7 @@ class TLSScanner(object):
 		
 		for i in self.RESPONSES:
 			print i
+
 		#printing certificate informations
 		print "\nTotal number of certificates received: ", len(self.certificate_chain)
 		for cert in self.certificate_chain:
@@ -624,10 +662,10 @@ class TLSScanner(object):
 	# Start a comprehensive scan of the given website.
 	#
 	def full_scan(self):
-		self.scan_protocol_versions()
+		self._scan_protocol_versions()
 		self._scan_compression()
 		self._scan_secure_renegotiation()
-		#self.scan_cipher_suite_accepted()
+		#self._scan_cipher_suite_accepted()
 		
 		self._check_bad_sni_response()
 		self._check_hsts()
@@ -639,9 +677,9 @@ class TLSScanner(object):
 		if mode == TLSScanner.MODE.FULLSCAN:
 			self.full_scan()
 		elif mode == TLSScanner.MODE.CIPHERS:
-			self.scan_cipher_suite_accepted()
+			self._scan_cipher_suite_accepted()
 		elif mode == TLSScanner.MODE.SUPPROTO:
-			self.scan_protocol_versions()
+			self._scan_protocol_versions()
 		elif mode == TLSScanner.MODE.CERTSCAN:
 			self._analyze_certificates()
 

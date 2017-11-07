@@ -47,14 +47,15 @@ def main():
 	start_time = timeit.default_timer()
 	print args
 	print "\n"
-	scanner = TLSScanner(target=target, time_delay=args.delay, verbose=args.verbose, to_file = args.write)
+	scanner = TLSScanner(target=target, time_delay=args.delay, verbose=args.verbose, 
+		to_file = args.write, torify=args.torify)
 	sniffer_process = None
 	if args.sniff:
 		if os.geteuid() != 0:
 			exit("You need to have root privileges to run SNIFFING mode.\nExiting.")
 
 		filename = args.write + ".pcap" if args.write else "pcap_"+str(datetime.datetime.now()).replace(" ","_")+".pcap"
-		sniffer_process = Process(target=sniffer, args=(filename, scanner.target[0]))
+		sniffer_process = Process(target=sniffer, args=(filename, scanner.target[0], args.torify))
 		sniffer_process.start()
 
 	if args.ciphers:
@@ -82,8 +83,8 @@ def main():
 def signal_handler(signal, frame):
     raise KeyboardInterrupt
 
-def sniffer(filename, ip):
-	filter = "host " + str(ip)
+def sniffer(filename, ip, torify):
+	filter = "host " + str(ip) if not torify else ""
 	signal.signal(signal.SIGTERM, signal_handler)
 	wrpcap(filename, sniff(filter=filter))
 
