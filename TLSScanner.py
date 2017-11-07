@@ -43,42 +43,33 @@ def TCPConnect(target):
 # 
 # return (version, server_response) if accepted else None
 # 
-def send_client_hello(parameters):
-	serve_name = parameters[7]
-	target = parameters[0]
-	cipher_code = parameters[1]
-	ver = parameters[2]
-	tls_fallback = parameters[3]
-	compression = parameters[4]
-	secure_reneg = parameters[5]
-	time_to_wait = parameters[6]
-	tls_heartbeat = parameters[8]
-
-	if 0x5600 in cipher_code and not tls_fallback:
-		cipher_code.remove(0x5600)
+def send_client_hello(tls_scan_obj):
+	if 0x5600 in tls_scan_obj.cipher_list and not tls_scan_obj.tls_fallback:
+		tls_scan_obj.cipher_list.remove(0x5600)
 	else:
-		cipher_code.append(0x5600)
+		tls_scan_obj.cipher_list.append(0x5600)
 	
 	#cipher_code.remove(0x5600) if (0x5600 in cipher_code and not tls_fallback) else cipher_code.append(0x5600)
-	compression = range(1,0xff) if compression else 0x00
+	compression = range(1,0xff) if tls_scan_obj.tls_compression else 0x00
 
-	sock = TCPConnect(target)
+	sock = TCPConnect(tls_scan_obj.target)
 	packet = TLSRecord(version="TLS_1_0")/\
 				TLSHandshake()/\
-				TLSClientHello(version=ver,
+				TLSClientHello(version=tls_scan_obj.version,
 							compression_methods=compression,
-							cipher_suites=cipher_code,
+							cipher_suites=tls_scan_obj.cipher_list,
 							extensions = [
 									TLSExtension()/\
 										TLSExtServerNameIndication(server_names=
-											[TLSServerName(data=serve_name)],)
+											[TLSServerName(data=tls_scan_obj.server_name)],)
 								])
 
-	if secure_reneg:
+	if tls_scan_obj.tls_sec_reneg:
 		packet.getlayer(TLSClientHello).extensions.append(TLSExtension()/TLSExtRenegotiationInfo())
-	if tls_heartbeat:
+	if tls_scan_obj.tls_heartbeat:
 		packet.getlayer(TLSClientHello).extensions.append(TLSExtension()/TLSExtHeartbeat())
-	sleep(float(time_to_wait)/1000)
+
+	sleep(float(tls_scan_obj.time_to_wait)/1000)
 	sock.sendall(str(packet))
 	
 	try:
@@ -91,7 +82,7 @@ def send_client_hello(parameters):
 	ssl_p = SSL(resp)
 	#ssl_p.show()
 	if ssl_p.haslayer(TLSServerHello) or ssl_p.haslayer(TLSAlert) or ssl_p.haslayer(TLSCertificate):
-		return (ver,resp)
+		return (tls_scan_obj.version,resp)
 	else:
 		return None
 
@@ -107,26 +98,13 @@ def send_client_hello(parameters):
 # Example
 # { "TLS_1_0": [0x00,0x01]}
 # 
-def order_cipher_suites(parameters):
-	target = parameters[0]
-	cipher_code_list = parameters[1]
-	version = parameters[2]
-	time_to_wait = parameters[3]
-	server_name = parameters[4]
-
+def order_cipher_suites(tls_scan_obj):
 	ordered_cipher_list = {}
 	ordered_cipher_list.update({version:[]})
 	go = True
 	while go:
 		#print "SCAN CIPHER TIME TO WAIT: " + str(time_to_wait)
-		resp = send_client_hello((target, cipher_code_list, version,
-					 SCAN_PARAMS.NO_TLS_FALLBACK,
-					 SCAN_PARAMS.NO_COMPRESSION,
-					 SCAN_PARAMS.NO_SECURE_RENEG,
-					 time_to_wait,
-					 server_name,
-					 SCAN_PARAMS.NO_TLS_HEARTBEAT
-					 ))
+		resp = send_client_hello(tls_scan_obj)
 		if resp != None:
 			resp = SSL(resp[1])
 			if resp.haslayer(TLSServerHello):
@@ -162,17 +140,17 @@ class SCAN_PARAMS:
 		NO_COMPRESSION =  NO_TLS_FALLBACK = NO_TLS_HEARTBEAT = NO_SECURE_RENEG = False
 
 class TLSScanObject(object):
-	def __init__(self, target, cipher_list=range(0xff), version="TLS_1_1", tls_fallback=False,
-					tls_compression=False, tls_sec_reneg=False, tls_heartbeat=False, time_to_wait=0, server_name)
-	self.target = target
-	self.cipher_list = cipher_list
-	self.version=version
-	self.tls_fallback = tls_fallback
-	self.tls_compression = tls_compression
-	self.tls_sec_reneg = tls_sec_reneg
-	self.tls_heartbeat = tls_heartbeat
-	self.time_to_wait = time_to_wait
-	self.server_name = server_name
+	def __init__(self, target, server_name, cipher_list=range(0xff), version="TLS_1_1", tls_fallback=False,
+					tls_compression=False, tls_sec_reneg=False, tls_heartbeat=False, time_to_wait=0):
+		self.target = target
+		self.cipher_list = cipher_list
+		self.version=version
+		self.tls_fallback = tls_fallback
+		self.tls_compression = tls_compression
+		self.tls_sec_reneg = tls_sec_reneg
+		self.tls_heartbeat = tls_heartbeat
+		self.time_to_wait = time_to_wait
+		self.server_name = server_name
 
 class TLSScanner(object):
 	class MODE:
@@ -213,6 +191,7 @@ class TLSScanner(object):
 		self.SECURE_RENEGOTIATION = None
 		self.COMPRESSION_ENABLED = None
 		self.tls_heartbeat = None
+		self.tls_heartbleed = None
 		self.bad_sni_check = None
 		self.hsts = None
 		self.http_status_code = None
@@ -300,26 +279,16 @@ class TLSScanner(object):
 		if len(self.SUPP_PROTO) == 0:
 			self._scan_protocol_versions()
 		ver = self.SUPP_PROTO[::-1][0]
-		print "checking hearbeat extension...       ",
 		a = timeit.default_timer()
 
-		params = (self.target, range(0xff), ver,
-			SCAN_PARAMS.NO_TLS_FALLBACK,
-			SCAN_PARAMS.NO_COMPRESSION,
-			SCAN_PARAMS.NO_SECURE_RENEG,
-			self.time_delay,
-			self.hostname,
-			SCAN_PARAMS.TLS_HEARTBEAT)
-
-		ver, resp = send_client_hello(params)
+		tls_scan_obj = TLSScanObject(target=self.target, version=ver, server_name=self.hostname, tls_heartbeat=True)
+		ver, resp = send_client_hello(tls_scan_obj)
 		resp = SSL(resp)
 
-		#ssl_p.show()
 		self.tls_heartbeat = True if resp.haslayer(TLSExtHeartbeat) else False
 
 		print "\t\t\tdone. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
-
 
 	def _analyze_certificates(self):
 		if len(self.SUPP_PROTO) == 0:
@@ -350,14 +319,8 @@ class TLSScanner(object):
 		bogus_hostname = "www.bogus-address.com"
 
 		ver = self.SUPP_PROTO[::-1][0]
-		params = (self.target, range(0xff),ver , 
-				SCAN_PARAMS.TLS_FALLBACK,
-				SCAN_PARAMS.NO_COMPRESSION,
-				SCAN_PARAMS.NO_SECURE_RENEG,
-				self.time_delay,
-				bogus_hostname,
-				SCAN_PARAMS.NO_TLS_HEARTBEAT)
-		ver,resp = send_client_hello(params)
+		tls_scan_obj = TLSScanObject(target=self.target, server_name=bogus_hostname, version=ver, tls_fallback=False)
+		ver,resp = send_client_hello(tls_scan_obj)
 		if resp != None:
 			resp = SSL(resp)
 			if resp.haslayer(TLSCertificate):
@@ -374,15 +337,9 @@ class TLSScanner(object):
 		for proto in self.PROTOS:
 			error = 0
 			#scan for accepted protocol and include SCSV fallback signal
-			params = (self.target, range(0xff), proto, 
-				SCAN_PARAMS.TLS_FALLBACK,
-				SCAN_PARAMS.NO_COMPRESSION,
-				SCAN_PARAMS.NO_SECURE_RENEG,
-				self.time_delay,
-				self.hostname,
-				SCAN_PARAMS.NO_TLS_HEARTBEAT)
-			
-			resp = send_client_hello(params)
+			tls_scan_obj = TLSScanObject(target=self.target, server_name=self.hostname, version=proto,
+											tls_fallback=True, time_to_wait=self.time_delay)
+			resp = send_client_hello(tls_scan_obj)
 			if resp == None:
 				error = 1
 			else:
@@ -426,14 +383,9 @@ class TLSScanner(object):
 		ver = self.SUPP_PROTO[::-1][0]
 
 		#scan if compression is enabled (scan for every protocol?)
-		params = (self.target, range(0xff), ver,
-			SCAN_PARAMS.NO_TLS_FALLBACK,
-			SCAN_PARAMS.COMPRESSION,
-			SCAN_PARAMS.NO_SECURE_RENEG,
-			self.time_delay,
-			self.hostname,
-			SCAN_PARAMS.NO_TLS_HEARTBEAT)
-		ver, resp = send_client_hello(params)
+		tls_scan_obj = TLSScanObject(target=self.target, server_name=self.hostname, version=ver, tls_compression=True,
+										time_to_wait=self.time_delay)
+		ver, resp = send_client_hello(tls_scan_obj)
 		resp = SSL(resp)
 		if resp.haslayer(TLSAlert):
 			if resp[TLSAlert].description == 50:
@@ -456,7 +408,9 @@ class TLSScanner(object):
 					self.time_delay,
 					self.hostname,
 					SCAN_PARAMS.NO_TLS_HEARTBEAT)
-		ver, resp = send_client_hello(params)
+		tls_scan_obj = TLSScanObject(target=self.target, server_name=self.hostname, version=ver, tls_sec_reneg=True,
+										time_to_wait=self.time_delay)
+		ver, resp = send_client_hello(tls_scan_obj)
 		resp = SSL(resp)
 		self.SECURE_RENEGOTIATION = True if resp.haslayer(TLSExtRenegotiationInfo) else False
 		print "\tdone. ",
@@ -498,8 +452,9 @@ class TLSScanner(object):
 
 		parameters = []
 		for proto in cipher_scan_list.keys():
-			parameters.append((self.target, cipher_scan_list[proto], proto,
-					 self.time_delay, self.hostname, SCAN_PARAMS.NO_TLS_HEARTBEAT))
+			tls_scan_obj = TLSScanObject(target=self.target, server_name=self.hostname, version=proto,
+											cipher_list=cipher_scan_list[proto], time_to_wait=self.time_delay)
+			parameters.append(tls_scan_obj)
 
 		with ProcessPoolExecutor(max_workers=len(self.SUPP_PROTO)) as executor:
 			for version, ordered_cipher_list in executor.map(order_cipher_suites, parameters):
