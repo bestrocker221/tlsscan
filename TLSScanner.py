@@ -3,16 +3,16 @@ logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 from scapy.all import *
 from colors import *
 from time import sleep,time
-from concurrent.futures import ProcessPoolExecutor, as_completed,ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from OpenSSL import crypto
 from asn1crypto.x509 import Certificate
 #
 # Test if target is reachable otherwise abort
 #
-def checkConnection(target, torify):
+def checkConnection(target):
 		try:
 			#socket.setdefaulttimeout(3)
-			socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(target)
+			s = socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(target)
 			return True
 		except Exception as ex:
 			print "\n" + str(ex)
@@ -23,7 +23,7 @@ def checkConnection(target, torify):
 #
 # Create and return a socket with the target ( hostname, port ) selected.
 #
-def TCPConnect(target, torify):
+def TCPConnect(target):
 	sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
 	try:
 		sock.connect(target)
@@ -31,6 +31,9 @@ def TCPConnect(target, torify):
 		print "Couldnt connect with the socket-server: %s\n" % msg
 		exit(1)
 	return sock
+
+#def getaddrinfo(*args):
+#    return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (args[0], args[1]))]
 # 
 # Function that deliver ClientHello and return the server response if any
 #
@@ -49,8 +52,7 @@ def send_client_hello(parameters):
 	compression = parameters[4]
 	secure_reneg = parameters[5]
 	time_to_wait = parameters[6]
-
-	torify = parameters[8]
+	tls_heartbeat = parameters[8]
 
 	if 0x5600 in cipher_code and not tls_fallback:
 		cipher_code.remove(0x5600)
@@ -60,7 +62,7 @@ def send_client_hello(parameters):
 	#cipher_code.remove(0x5600) if (0x5600 in cipher_code and not tls_fallback) else cipher_code.append(0x5600)
 	compression = range(1,0xff) if compression else 0x00
 
-	sock = TCPConnect(target, torify)
+	sock = TCPConnect(target)
 	packet = TLSRecord(version="TLS_1_0")/\
 				TLSHandshake()/\
 				TLSClientHello(version=ver,
@@ -74,8 +76,11 @@ def send_client_hello(parameters):
 
 	if secure_reneg:
 		packet.getlayer(TLSClientHello).extensions.append(TLSExtension()/TLSExtRenegotiationInfo())
+	if tls_heartbeat:
+		packet.getlayer(TLSClientHello).extensions.append(TLSExtension()/TLSExtHeartbeat())
 	sleep(float(time_to_wait)/1000)
 	sock.sendall(str(packet))
+	
 	try:
 		resp = sock.recv(10240)
 	except socket.error as msg:
@@ -84,7 +89,8 @@ def send_client_hello(parameters):
 	sock.close()
 
 	ssl_p = SSL(resp)
-	if ssl_p.haslayer(TLSServerHello) or ssl_p.haslayer(TLSAlert):
+	#ssl_p.show()
+	if ssl_p.haslayer(TLSServerHello) or ssl_p.haslayer(TLSAlert) or ssl_p.haslayer(TLSCertificate):
 		return (ver,resp)
 	else:
 		return None
@@ -108,8 +114,6 @@ def order_cipher_suites(parameters):
 	time_to_wait = parameters[3]
 	server_name = parameters[4]
 
-	torify = parameters[5]
-
 	ordered_cipher_list = {}
 	ordered_cipher_list.update({version:[]})
 	go = True
@@ -121,7 +125,8 @@ def order_cipher_suites(parameters):
 					 SCAN_PARAMS.NO_SECURE_RENEG,
 					 time_to_wait,
 					 server_name,
-					 torify))
+					 SCAN_PARAMS.NO_TLS_HEARTBEAT
+					 ))
 		if resp != None:
 			resp = SSL(resp[1])
 			if resp.haslayer(TLSServerHello):
@@ -153,8 +158,21 @@ class Event(object):
 		self.subject = subject
 
 class SCAN_PARAMS:
-		COMPRESSION = TLS_FALLBACK = SECURE_RENEG = True
-		NO_COMPRESSION =  NO_TLS_FALLBACK = NO_SECURE_RENEG = False
+		COMPRESSION = TLS_FALLBACK = TLS_HEARTBEAT = SECURE_RENEG = True
+		NO_COMPRESSION =  NO_TLS_FALLBACK = NO_TLS_HEARTBEAT = NO_SECURE_RENEG = False
+
+class TLSScanObject(object):
+	def __init__(self, target, cipher_list=range(0xff), version="TLS_1_1", tls_fallback=False,
+					tls_compression=False, tls_sec_reneg=False, tls_heartbeat=False, time_to_wait=0, server_name)
+	self.target = target
+	self.cipher_list = cipher_list
+	self.version=version
+	self.tls_fallback = tls_fallback
+	self.tls_compression = tls_compression
+	self.tls_sec_reneg = tls_sec_reneg
+	self.tls_heartbeat = tls_heartbeat
+	self.time_to_wait = time_to_wait
+	self.server_name = server_name
 
 class TLSScanner(object):
 	class MODE:
@@ -165,6 +183,8 @@ class TLSScanner(object):
 
 	def __init__(self, target, time_delay, verbose, to_file, torify):
 		self.hostname = target[0]
+		self.dest_ip = None
+		self.port = target[1]
 		self.verbose = verbose
 		self.to_file = to_file
 
@@ -172,7 +192,7 @@ class TLSScanner(object):
 		self.torify = torify
 		if self.torify:
 			self._set_tor_proxy()
-		self.target = (socket.gethostbyname(self.hostname), target[1])
+		self.target = (self.hostname, target[1])
 		self.scan_mode = None
 		#timing variable
 		self.time_delay = time_delay
@@ -192,6 +212,7 @@ class TLSScanner(object):
 		self.TLS_FALLBACK_SCSV_SUPPORTED = None
 		self.SECURE_RENEGOTIATION = None
 		self.COMPRESSION_ENABLED = None
+		self.tls_heartbeat = None
 		self.bad_sni_check = None
 		self.hsts = None
 		self.http_status_code = None
@@ -205,11 +226,11 @@ class TLSScanner(object):
 		# Structure of events:
 		# Event() list
 		self.EVENTS = []
-
-		if not checkConnection(self.target, self.torify):
+		
+		if not checkConnection((self.hostname, self.port)):
 			sys.exit(1)
 
-		print "TARGET: " + str(self.hostname) + " resolved to " + str(self.target[0]) +":"+ str(self.target[1])
+		print "TARGET: " + str(self.hostname) + " resolved to " + str(self.target[0]) +":"+ str(self.port)
 		print "Date of the test: " + str(datetime.datetime.now())
 		if self.time_delay > 0:
 			print "Timing: %d millisec between each request." % self.time_delay
@@ -219,11 +240,12 @@ class TLSScanner(object):
 		#self.print_results()
 		#self.scan_protocol_versions()
 		#self._check_bad_sni_response()
+		#self._check_heartbeat()
 	
 
 	def _set_tor_proxy(self):
 		print "Checking tor proxy connectivity...   "
-		if not checkConnection(("127.0.0.1", 9050), False):
+		if not checkConnection(("127.0.0.1", 9050)):
 			print "TOR PROXY NOT RUNNING\n"
 			exit(1)
 		else:
@@ -231,6 +253,8 @@ class TLSScanner(object):
 			print "TOR PROXY RUNNING ON PORT 9050\n"
 			#setting global socket setting to use socks.socksocket
 			socket.socket = socks.socksocket
+			#socket.getaddrinfo = getaddrinfo
+
 			self.requests_session.proxies = {
 				'http':'socks5h://127.0.0.1:9050',
 				'https':'socks5h://127.0.0.1:9050'
@@ -272,7 +296,31 @@ class TLSScanner(object):
 		print textColor("ciao\nciao", bcolors.RED)
 		exit(0)
 
-	
+	def _check_heartbeat(self):
+		if len(self.SUPP_PROTO) == 0:
+			self._scan_protocol_versions()
+		ver = self.SUPP_PROTO[::-1][0]
+		print "checking hearbeat extension...       ",
+		a = timeit.default_timer()
+
+		params = (self.target, range(0xff), ver,
+			SCAN_PARAMS.NO_TLS_FALLBACK,
+			SCAN_PARAMS.NO_COMPRESSION,
+			SCAN_PARAMS.NO_SECURE_RENEG,
+			self.time_delay,
+			self.hostname,
+			SCAN_PARAMS.TLS_HEARTBEAT)
+
+		ver, resp = send_client_hello(params)
+		resp = SSL(resp)
+
+		#ssl_p.show()
+		self.tls_heartbeat = True if resp.haslayer(TLSExtHeartbeat) else False
+
+		print "\t\t\tdone. ",
+		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
+
+
 	def _analyze_certificates(self):
 		if len(self.SUPP_PROTO) == 0:
 			self._scan_protocol_versions()
@@ -308,7 +356,7 @@ class TLSScanner(object):
 				SCAN_PARAMS.NO_SECURE_RENEG,
 				self.time_delay,
 				bogus_hostname,
-				self.torify)
+				SCAN_PARAMS.NO_TLS_HEARTBEAT)
 		ver,resp = send_client_hello(params)
 		if resp != None:
 			resp = SSL(resp)
@@ -332,7 +380,7 @@ class TLSScanner(object):
 				SCAN_PARAMS.NO_SECURE_RENEG,
 				self.time_delay,
 				self.hostname,
-				self.torify)
+				SCAN_PARAMS.NO_TLS_HEARTBEAT)
 			
 			resp = send_client_hello(params)
 			if resp == None:
@@ -384,7 +432,7 @@ class TLSScanner(object):
 			SCAN_PARAMS.NO_SECURE_RENEG,
 			self.time_delay,
 			self.hostname,
-			self.torify)
+			SCAN_PARAMS.NO_TLS_HEARTBEAT)
 		ver, resp = send_client_hello(params)
 		resp = SSL(resp)
 		if resp.haslayer(TLSAlert):
@@ -407,7 +455,7 @@ class TLSScanner(object):
 					SCAN_PARAMS.SECURE_RENEG,
 					self.time_delay,
 					self.hostname,
-					self.torify)
+					SCAN_PARAMS.NO_TLS_HEARTBEAT)
 		ver, resp = send_client_hello(params)
 		resp = SSL(resp)
 		self.SECURE_RENEGOTIATION = True if resp.haslayer(TLSExtRenegotiationInfo) else False
@@ -450,7 +498,8 @@ class TLSScanner(object):
 
 		parameters = []
 		for proto in cipher_scan_list.keys():
-			parameters.append((self.target, cipher_scan_list[proto], proto, self.time_delay, self.hostname, self.torify))
+			parameters.append((self.target, cipher_scan_list[proto], proto,
+					 self.time_delay, self.hostname, SCAN_PARAMS.NO_TLS_HEARTBEAT))
 
 		with ProcessPoolExecutor(max_workers=len(self.SUPP_PROTO)) as executor:
 			for version, ordered_cipher_list in executor.map(order_cipher_suites, parameters):
@@ -639,7 +688,9 @@ class TLSScanner(object):
 		if self.SECURE_RENEGOTIATION != None:
 			print "\nSECURE RENEGOTIATION supported?",
 			print self._textColor("True", bcolors.OKGREEN) if self.SECURE_RENEGOTIATION else self._textColor("False", bcolors.RED)
-		
+		if self.tls_heartbeat != None:
+			print "\nTLS Heartbeat extension supported?",
+			print "Yes" if self.tls_heartbeat else "No"
 		#printing HSTS header info
 		if self.hsts != None:
 			self._print_hsts_results()
@@ -669,6 +720,7 @@ class TLSScanner(object):
 		
 		self._check_bad_sni_response()
 		self._check_hsts()
+		self._check_heartbeat()
 
 	def scan(self, mode):
 		print "\nStarting SSL/TLS test on %s --> %s:%d" % (self.hostname,self.target[0],self.target[1])
@@ -682,7 +734,7 @@ class TLSScanner(object):
 			self._scan_protocol_versions()
 		elif mode == TLSScanner.MODE.CERTSCAN:
 			self._analyze_certificates()
-
+		#self.print_results()
 		print "\n ---------- SCAN FINISHED ----------\n"
 '''	
 def main():
