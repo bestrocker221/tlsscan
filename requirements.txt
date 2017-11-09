@@ -1,0 +1,5 @@
+scapy==2.3.2
+PySocks>=1.6.7
+asn1crypto>=0.23.0
+requests>=2.18.1
+futures>=3.1.1

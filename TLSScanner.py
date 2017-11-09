@@ -275,12 +275,13 @@ class TLSScanner(object):
 			socket.socket = socks.socksocket
 			#socket.getaddrinfo = getaddrinfo
 
+			#socks5h for forcing DNS resolution through proxy
 			self.requests_session.proxies = {
 				'http':'socks5h://127.0.0.1:9050',
 				'https':'socks5h://127.0.0.1:9050'
 			}
 			#url to get ext ip
-			url = "http://icanhazip.com"
+			url = "https://icanhazip.com"
 			response = self.requests_session.get(url)
 			print "TOR IP: ", response.text
 
