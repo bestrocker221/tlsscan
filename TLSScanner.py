@@ -62,6 +62,10 @@ def send_client_hello(tls_scan_obj):
 		packet.getlayer(TLSClientHello).extensions.append(TLSExtension()/TLSExtRenegotiationInfo())
 	if tls_scan_obj.tls_heartbeat:
 		packet.getlayer(TLSClientHello).extensions.append(TLSExtension()/TLSExtHeartbeat())
+	if tls_scan_obj.ocsp:
+		packet.getlayer(TLSClientHello).extensions.append(TLSExtension()/TLSExtCertificateStatusRequest())
+	if tls_scan_obj.session_ticket:
+		packet.getlayer(TLSClientHello).extensions.append(TLSExtension()/TLSExtSessionTicketTLS())
 
 	sleep(float(tls_scan_obj.time_to_wait)/1000)
 	sock.sendall(str(packet))
@@ -146,8 +150,9 @@ class Event(object):
 		self.subject = subject
 
 class TLSScanObject(object):
-	def __init__(self, target, server_name, cipher_list=range(0xff), version="TLS_1_1", tls_fallback=False,
-					tls_compression=False, tls_sec_reneg=False, tls_heartbeat=False, tls_heartbleed=False, time_to_wait=0):
+	def __init__(self, target, server_name, cipher_list=range(0xff), version="TLS_1_1", tls_fallback=False, ocsp=False,
+					tls_compression=False, tls_sec_reneg=False, tls_heartbeat=False, tls_heartbleed=False,
+					session_ticket=False, time_to_wait=0):
 		self.target = target
 		self.cipher_list = cipher_list
 		self.version=version
@@ -158,6 +163,9 @@ class TLSScanObject(object):
 		self.tls_heartbleed = tls_heartbleed
 		self.time_to_wait = time_to_wait
 		self.server_name = server_name
+
+		self.ocsp = ocsp
+		self.session_ticket = session_ticket
 
 class TLSScanner(object):
 	class MODE:
@@ -177,8 +185,7 @@ class TLSScanner(object):
 		self.torify = torify
 		if self.torify:
 			self._set_tor_proxy()
-		self.target = (socket.gethostbyname(self.hostname) if not torify
-							 else self.hostname, target[1])
+		self.target = self._maket_target()
 		self.scan_mode = None
 		#timing variable
 		self.time_delay = time_delay
@@ -200,6 +207,7 @@ class TLSScanner(object):
 		self.COMPRESSION_ENABLED = None
 		self.tls_heartbeat = None
 		self.tls_heartbleed = None
+		self.tls_session_tickets = None
 
 		self.tls_beast = False
 		self.rc4_enabled = False
@@ -237,7 +245,56 @@ class TLSScanner(object):
 		#self._check_bad_sni_response()
 		#self._check_heartbeat()
 		#self._check_heartbleed()
+		#self._check_ocsp()
+		#self._check_session_ticket()
 	
+	def _maket_target(self):
+		try:
+			return (socket.gethostbyname(self.hostname) if not self.torify
+							else self.hostname, self.port)
+		except socket.gaierror as err:
+			if err.errno == -2:
+				print "Host does not resolve to a valid IP\nPlease try again with a correct hostname\n\n"
+			else:
+				print err
+			exit(1)
+
+	def _check_session_ticket(self):
+		if len(self.SUPP_PROTO) == 0:
+			self._scan_protocol_versions()
+		print "checking TLS session ticket support..",
+		ver = self.SUPP_PROTO[::-1][0]
+		a = timeit.default_timer()
+
+		tls_scan_obj = TLSScanObject(target=self.target, version=ver, server_name=self.hostname, session_ticket=True)
+		ver, resp = send_client_hello(tls_scan_obj)
+		resp = SSL(resp)
+		self.tls_session_tickets = False
+		for ext in resp.getlayer(TLSServerHello).extensions:
+			if ext.type == 35:
+				#session ticket supported
+				self.tls_session_tickets = True
+		print "\t\t\tdone. ",
+		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
+
+	def _check_ocsp(self):
+		print "checking ocsp"
+		if len(self.SUPP_PROTO) == 0:
+			self._scan_protocol_versions()
+			if "TLS_1_1" not in self.SUPP_PROTO or "TLS_1_2" not in self.SUPP_PROTO:
+				self.tls_heartbeat = False
+				return
+		print "checking TLS heartbeat extension...  ",
+		ver = self.SUPP_PROTO[::-1][0]
+		a = timeit.default_timer()
+
+		tls_scan_obj = TLSScanObject(target=self.target, version=ver, server_name=self.hostname, ocsp=True)
+		ver, resp = send_client_hello(tls_scan_obj)
+		resp = SSL(resp)
+
+
+		exit(1)
+
 
 	def _set_tor_proxy(self):
 		print "Checking tor proxy connectivity...   "
@@ -379,6 +436,7 @@ class TLSScanner(object):
 			if resp.haslayer(TLSCertificate):
 				cert = Certificate.load(bytes(resp.getlayer(TLSCertificate).data))
 				cert_hostnames = cert.valid_domains
+				#very basic check on hostname match
 				self.bad_sni_check = bogus_hostname in cert_hostnames
 		print "\t\t\tdone. ",
 		print "in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
@@ -540,7 +598,7 @@ class TLSScanner(object):
     		'cache-control': "no-cache"
 		}
 		url = "https://" + self.hostname
-		#disabling warning
+		#disabling warning, we want just to know if hsts is supported.
 		requests.urllib3.disable_warnings()
 		#disabling certificate verification
 		response = self.requests_session.head(url, headers=headers, verify=False)
@@ -552,7 +610,7 @@ class TLSScanner(object):
 	# Print result for HSTS header request.
 	#
 	def _print_hsts_results(self):
-		print "\nHTTP Strict Transport Security enabled? ",
+		print "\n[*]HTTP Strict Transport Security enabled? ",
 		if self.hsts:
 			print self._textColor("YES", bcolors.OKGREEN)
 			print "\tHeader: ", self._textColor(self.hsts, bcolors.OKGREEN)
@@ -603,10 +661,10 @@ class TLSScanner(object):
 				else:
 					print "non-critical"
 
-			print "\nCertificate signature scheme: ", certificate.signature_algo
+			print "\n[*]Certificate signature scheme: ", certificate.signature_algo
 			#print "Certificate signature (hexlified):\n\t", binascii.hexlify(certificate.signature)
 
-		print "Is certificate EXPIRED? ",
+		print "[*]Is certificate EXPIRED? ",
 		nb = datetime.datetime.strptime(str(tbs_cert["validity"]["not_before"])[:-6], '%Y-%m-%d %H:%M:%S')
 		na = datetime.datetime.strptime(str(tbs_cert["validity"]["not_after"])[:-6], '%Y-%m-%d %H:%M:%S')
 		now = datetime.datetime.strptime(str(datetime.datetime.now())[:-7], '%Y-%m-%d %H:%M:%S')
@@ -616,26 +674,26 @@ class TLSScanner(object):
 			print self._textColor("YES, expired on " + str(na), bcolors.FAIL)
 
 		if not certificate.ca:
-			print "Hostname match CN or SUBJECT_ALTERNATIVE_NAME?",
+			print "[*]Hostname match CN or SUBJECT_ALTERNATIVE_NAME?",
 			if (self.hostname in tbs_cert["subject"]["common_name"] or self.hostname in certificate.valid_domains):
 				print self._textColor("YES", bcolors.OKGREEN) 
 			else:
 				print self._textColor("NO", bcolors.FAIL)
 		print "(Requested) ", self.hostname, " (Certificate)",tbs_cert["subject"]["common_name"]
 		if not certificate.ca:
-			print "Hostname matches with alternative name: ",
+			print "[*]Hostname matches with alternative name: ",
 			if (self.hostname in certificate.valid_domains):
 				print self._textColor(self.hostname, bcolors.OKGREEN)
 			else:
 				print self._textColor("Nothing", bcolors.FAIL)
-		print "Is a CA certificate?",
+		print "[*]Is a CA certificate?",
 		print "YES" if certificate.ca else "NO"
-		print "Is a self-signed certificate? ", certificate.self_signed.upper()
+		print "[*]Is a self-signed certificate? ", certificate.self_signed.upper()
 		
 		if self.verbose:
-			print "CRL url: ", certificate.crl_distribution_points[0].url if (len(certificate.crl_distribution_points) > 0) else "NO CLR"
-			print "OSCP url: ",certificate.ocsp_urls[0]
-			print "Valid domains for certificate: ", certificate.valid_domains if (len(certificate.valid_domains) > 0) else "None"
+			print "[*]CRL url: ", certificate.crl_distribution_points[0].url if (len(certificate.crl_distribution_points) > 0) else "NO CLR"
+			print "[*]OSCP url: ",certificate.ocsp_urls[0]
+			print "[*]Valid domains for certificate: ", certificate.valid_domains if (len(certificate.valid_domains) > 0) else "None"
 
 	#
 	# Printing supported protocols.
@@ -679,7 +737,7 @@ class TLSScanner(object):
 	# Print if server sent back an alert for a bad SNI.
 	#
 	def _print_bad_sni_check(self):
-		print "\nIncorrect Server Name Indication alert? ",
+		print "\n[*]Incorrect Server Name Indication alert? ",
 		print "NO" if not self.bad_sni_check else self._textColor("YES", bcolors.OKGREEN)
 
 	#
@@ -708,18 +766,18 @@ class TLSScanner(object):
 		print "\n\n################## SECURITY OPTIONS #################"
 		#printing support for SCSV
 		if self.TLS_FALLBACK_SCSV_SUPPORTED != None:
-			print "\nTLS_FALLBACK_SCSV supported? ",
+			print "\n[*]TLS_FALLBACK_SCSV supported? ",
 			print self._textColor("True", bcolors.OKGREEN) if self.TLS_FALLBACK_SCSV_SUPPORTED else self._textColor("False", bcolors.FAIL)
 		#printing support for compression
 		if self.COMPRESSION_ENABLED != None:
-			print "\nTLS COMPRESSION enabled? ",
+			print "\n[*]TLS COMPRESSION enabled? ",
 			print self._textColor("False", bcolors.OKGREEN) if not self.COMPRESSION_ENABLED else self._textColor("True", bcolors.FAIL)
 		#printing support for secure renegotiation extension
 		if self.SECURE_RENEGOTIATION != None:
-			print "\nSECURE RENEGOTIATION supported?",
+			print "\n[*]SECURE RENEGOTIATION supported?",
 			print self._textColor("True", bcolors.OKGREEN) if self.SECURE_RENEGOTIATION else self._textColor("False", bcolors.FAIL)
 		if self.tls_heartbeat != None:
-			print "\nTLS Heartbeat extension supported?",
+			print "\n[*]TLS Heartbeat extension supported?",
 			print "Yes" if self.tls_heartbeat else "No"
 		#printing HSTS header info
 		if self.hsts != None:
@@ -727,20 +785,22 @@ class TLSScanner(object):
 		#printing full support for sni
 		if self.bad_sni_check != None:
 			self._print_bad_sni_check()
-		
+		if self.tls_session_tickets != None:
+			print "\n[*]TLS session tickets resumption? ",
+			print self._textColor("YES", bcolors.OKGREEN) if self.tls_session_tickets else "NO"
 		#ATTACKS
 		print "\n\n################## ATTACKS #################"
 		if self.scan_mode == TLSScanner.MODE.CIPHERS or self.scan_mode == TLSScanner.MODE.FULLSCAN:
-			print "\nPOODLE attack (SSLv3): ",
+			print "\n[*]POODLE attack (SSLv3): ",
 			if self.poodle and not self.SECURE_RENEGOTIATION:
 				print self._textColor("potentially vulnerable", bcolors.FAIL)
 			else:
 				print self._textColor("not vulnerable, SSLv3 disabled and/or TLS downgrade protection supported.", bcolors.OKGREEN)
-			print "\nBEAST attack? ",
+			print "\n[*]BEAST attack? ",
 			print self._textColor("NO", bcolors.OKGREEN) if not self.tls_beast else "not mitigated server side."
-			print "\nHeartbleed vulnerable?", 
+			print "\n[*]Heartbleed vulnerable?", 
 			print self._textColor("YES, response written to file " + self.tls_heartbleed, bcolors.FAIL) if (type(self.tls_heartbleed) == str) else self._textColor("NO", bcolors.OKGREEN)
-			print "\nRC4 supported? ",
+			print "\n[*]RC4 supported? ",
 			print self._textColor("NO", bcolors.OKGREEN) if not self.rc4_enabled else self._textColor("YES", bcolors.FAIL)
 
 		print "\n\n\n"
@@ -756,7 +816,7 @@ class TLSScanner(object):
 		
 		self._check_bad_sni_response()
 		self._check_heartbeat()
-
+		self._check_session_ticket()
 		self._check_hsts()
 
 	def scan(self, mode):
