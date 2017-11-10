@@ -31,7 +31,7 @@ parser.add_argument('-s', '--sniff', action='store_true',
 	 help='save full packet capture in .pcap format. (NEED SUDO PRIVILEGES)')
 parser.add_argument('-t', '--torify', action='store_true', help='make the script running under Tor network.')
 parser.add_argument('-i', '--input',  type=argparse.FileType('r'), action='store', help='input file with website list (\\n separated.')
-parser.add_argument('-v', '--version', action='version', version='version 1.0', help='show program version.')
+parser.add_argument('-v', '--version', action='version', version='version 0.1', help='show program version.')
 
 
 def main():
