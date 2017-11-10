@@ -22,7 +22,7 @@ tlsscan is built upon [Scapy-SSL/TLS](https://github.com/tintinweb/scapy-ssl_tls
  * BEAST attack vulnerability
  * RC4 cipher support
  * EXPORT cipher support
- * Using TOR network for scanning anounimously
+ * Using TOR network for scanning anonymously
  * Write report to file
  * Save full packet capture of the test to .pcap file
  * HTTP Strict Transport Security status
@@ -99,7 +99,7 @@ Total number of certificates received:  2
 Signature Algorithm:    sha256_rsa
 [*]Is certificate EXPIRED?  NO, valid until 2018-01-10 13:16:20
 [*]Hostname match CN or SUBJECT_ALTERNATIVE_NAME? YES
-(Requested)  bestrockers.ddns.net  (Certificate) www.example.com
+(Requested)  www.example.com  (Certificate) www.example.com
 [*]Hostname matches with alternative name:  www.example.com
 [*]Is a CA certificate? NO
 [*]Is a self-signed certificate?  NO
@@ -108,7 +108,7 @@ Signature Algorithm:    sha256_rsa
 
 Signature Algorithm:    sha256_rsa
 [*]Is certificate EXPIRED?  NO, valid until 2021-03-17 16:40:46
-(Requested)  bestrockers.ddns.net  (Certificate) Let's Encrypt Authority X3
+(Requested)  www.example.com  (Certificate) Let's Encrypt Authority X3
 [*]Is a CA certificate? YES
 [*]Is a self-signed certificate?  NO
 
