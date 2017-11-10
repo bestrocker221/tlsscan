@@ -1,15 +1,17 @@
 import sys, datetime, argparse, timeit, signal, os
 from TLSScanner import TLSScanner
 from  multiprocessing import Process
-from scapy.all import *
+try:
+	from scapy.all import TLS
+	from scapy.all import *
+except ImportError:
+	from scapy_ssl_tls.ssl_tls import *
 
 
 parser = argparse.ArgumentParser(usage= sys.argv[0]+ ' <website> [options]', 
 	description='SSL/TLS website passive analyzer.',
 	epilog='''
-...             likewise for this epilog whose whitespace will
-...         be cleaned up and whose words will be wrapped
-...         across a couple lines
+...            Have fun! ...  
 ''')
 
 
@@ -33,9 +35,7 @@ parser.add_argument('-v', '--version', action='version', version='version 1.0', 
 
 
 def main():
-	#parser.print_help()
 	args = parser.parse_args()
-	#print args.input.read()
 	
 	if args.write:
 		sys.stdout = open(args.write, 'w')
@@ -64,21 +64,16 @@ def main():
 		sniffer_process.start()
 
 	if args.ciphers:
-		#scanner.scan_cipher_suite_accepted()
 		scanner.scan(TLSScanner.MODE.CIPHERS)
 		scanner.print_results()
 	elif args.certscan:
-		#scanner.analyze_certificates()
 		scanner.scan(TLSScanner.MODE.CERTSCAN)
 		scanner.print_results()
 	elif args.suppproto:
-		#scanner.scan_protocol_versions()
 		scanner.scan(TLSScanner.MODE.SUPPROTO)
 		scanner.print_results()
 	if args.fullscan:
-		##scanner.full_scan()
 		scanner.scan(TLSScanner.MODE.FULLSCAN)
-		#scanner._scan_protocol_versions()
 		scanner.print_results()
 
 	if sniffer_process != None:

@@ -881,21 +881,3 @@ class TLSScanner(object):
 			self._analyze_certificates()
 		#self.print_results()
 		print "\n ---------- SCAN FINISHED ----------\n"
-'''	
-def main():
-	target = (sys.argv[1], int(sys.argv[2]))
-
-	start_time = timeit.default_timer()
-    
-	scanner = TLSScanner(target)
-	scanner._fullScan()
-	scanner._printResults()
-
-	print "Finished in --- %s seconds ---\n\n" % (timeit.default_timer()-start_time)
-
-if __name__ == '__main__':
-	if len(sys.argv)<=2:
-		print ("Usage: <host> <port>")
-		exit(1)
-	main()
-'''
