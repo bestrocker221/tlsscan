@@ -1,4 +1,4 @@
-scapy-ssl-tls=1.2.3.2
+scapy-ssl-tls==1.2.3.2
 scapy==2.3.2
 PySocks>=1.6.7
 asn1crypto>=0.23.0

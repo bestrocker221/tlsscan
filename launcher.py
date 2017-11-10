@@ -49,6 +49,9 @@ def main():
 	start_time = timeit.default_timer()
 	print args
 	print "\n"
+	if args.input != None:
+		print "--input not yet supported, working on"
+
 	scanner = TLSScanner(target=target, time_delay=args.delay, verbose=args.verbose, 
 		to_file = args.write, torify=args.torify)
 	sniffer_process = None
