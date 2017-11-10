@@ -1,10 +1,14 @@
 import socks, logging, datetime, socket, timeit, binascii, collections, requests
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
-from scapy.all import *
+try:
+	from scapy.all import TLS
+	from scapy.all import *
+except ImportError:
+	from scapy_ssl_tls.ssl_tls import *
 from colors import *
 from time import sleep,time
 from concurrent.futures import ProcessPoolExecutor
-from OpenSSL import crypto
+#from OpenSSL import crypto
 from asn1crypto.x509 import Certificate
 
 #
