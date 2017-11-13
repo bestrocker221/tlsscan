@@ -15,7 +15,6 @@ from asn1crypto.x509 import Certificate
 #
 def checkConnection(target):
 		try:
-			#socket.setdefaulttimeout(3)
 			s = socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(target)
 			return True
 		except Exception as ex:
@@ -35,6 +34,23 @@ def TCPConnect(target):
 		print "Couldnt connect with the socket-server: %s\n" % msg
 		exit(1)
 	return sock
+
+#
+# Function for receiving all data in the stream.
+#
+def recvall(sock, buf_size=1024):
+	buf = []
+	sock.settimeout(1)
+	while True:
+		try:
+			chunk = sock.recv(buf_size)
+		except socket.error as msg:
+				break
+		if len(chunk) == 0:
+			break
+		buf.append(chunk)
+	return b''.join(buf)
+
 
 # 
 # Function that deliver ClientHello and return the server response if any
@@ -75,23 +91,20 @@ def send_client_hello(tls_scan_obj):
 
 	sleep(float(tls_scan_obj.time_to_wait)/1000)
 	sock.sendall(str(packet))
-	try:
-		resp = sock.recv(10240)
-	except socket.error as msg:
-		"socket error: " ,msg.message
-		return None
 	
+	resp = recvall(sock)
+
 	if tls_scan_obj.tls_heartbleed:
 		p = TLSRecord(version=tls_scan_obj.version)/TLSHeartBeat(length=2**14-1,data='bleeding...')
 		sock.settimeout(1)
 		sock.sendall(str(p))
 		try:
-			resp = sock.recv(8192)
+			resp2 = sock.recv(8192)
 		except (socket.timeout, socket.error) as msg:
 			#print "ERROR: ", msg, type(str(msg))
 			return (tls_scan_obj.version, str(msg))	
 		sock.close()
-		return (tls_scan_obj.version, resp)
+		return (tls_scan_obj.version, resp2)
 
 	sock.close()
 	ssl_p = SSL(resp)
@@ -200,7 +213,7 @@ class TLSScanner(object):
 		
 		self._server_certificate = None
 		self._certificate_chain = []
-		# Structure of ordered_cipher_list:
+		# Structure of _accepted_ordered_ciphers:
 		# Example
 		# { "TLS_1_0": [0x00,0x01], "TLS_1_1":[0x32], ...}
 		# { proto: [supp_ciphers], ... }
@@ -242,18 +255,19 @@ class TLSScanner(object):
 		print "\n"
 		#self.bogus()
 		#self.print_results()
-		#self.scan_protocol_versions()
+		#self._scan_protocol_versions()
 		#self._check_bad_sni_response()
 		#self._check_heartbeat()
 		#self._check_heartbleed()
 		#self._check_ocsp()
 		#self._check_session_ticket()
 		#exit(0)
+		#self._scan_compression()
+		#exit(19)
 	
 	def _make_target(self):
 		try:
-			return (socket.gethostbyname(self._hostname) if not self._torify
-							else self._hostname, self._port)
+			return (socket.gethostbyname(self._hostname) if not self._torify else self._hostname, self._port)
 		except socket.gaierror as err:
 			if err.errno == -2:
 				print "Host does not resolve to a valid IP\nPlease try again with a correct hostname\n\n"
@@ -287,7 +301,7 @@ class TLSScanner(object):
 	# Colorize text output if written to terminal, not to file.
 	#
 	def _textColor(self, txt, color):
-		return txt if (self._to_file != None) else textColor(txt,color)
+		return txt if self._to_file else textColor(txt,color)
 
 	def bogus(self):
 		print "OOOOOOOOOOOOOOOOOO"
@@ -410,6 +424,8 @@ class TLSScanner(object):
 		print "\t\t\tdone. in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 		if self._tls_heartbeat:
 			self._check_heartbleed()
+		else:
+			self._tls_heartbleed = False
 
 	#
 	# Check for heartbleed vulnerability.
@@ -419,27 +435,28 @@ class TLSScanner(object):
 		ver = self._SUPP_PROTO[0]
 		a = timeit.default_timer()
 		tls_scan_obj = TLSScanObject(target=self._target, version=ver, server_name=self._hostname, tls_heartbleed=True)
-		ver, resp = send_client_hello(tls_scan_obj)		
-		resp2 = SSL(resp)
-		
-		self._tls_heartbleed = False
-		if len(resp) == 0:
-			#print "nothing returned"
-			pass
-		elif resp == str(104):
-			#print "connection reset by peer"
-			pass
-		elif resp == "timed out":
-			#connection timed out, probably not vulnerable
-			pass
-		elif resp2.haslayer(TLSAlert):
-			if resp2.getlayer(TLSAlert).description == 10:
+		resp = send_client_hello(tls_scan_obj)
+		self._tls_heartbleed = False		
+		if resp != None:
+			#resp2 = SSL(resp)
+			resp = resp[1]
+			if len(resp) == 0:
+				#print "nothing returned"
 				pass
-				#unexpected msg
-		else:
-			with file("bleed_" + self._hostname + ".txt", "w") as f:
-				f.write(repr(resp))
-			self._tls_heartbleed = "bleed_" + self._hostname + ".txt"
+			elif resp == str(104):
+				#print "connection reset by peer"
+				pass
+			elif resp == "timed out":
+				#connection timed out, probably not vulnerable
+				pass
+			elif SSL(resp[1]).haslayer(TLSAlert):
+				if SSL(resp[1]).getlayer(TLSAlert).description == 10:
+					pass
+					#unexpected msg
+			else:
+				with file("bleed_" + self._hostname + ".txt", "w") as f:
+					f.write(repr(resp))
+				self._tls_heartbleed = "bleed_" + self._hostname + ".txt"
 
 		print "\t\t\tdone. in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 
@@ -477,9 +494,9 @@ class TLSScanner(object):
 
 		ver = self._SUPP_PROTO[0]
 		tls_scan_obj = TLSScanObject(target=self._target, server_name=bogus_hostname, version=ver, tls_fallback=False)
-		ver,resp = send_client_hello(tls_scan_obj)
+		resp = send_client_hello(tls_scan_obj)
 		if resp != None:
-			resp = SSL(resp)
+			resp = SSL(resp[1])
 			if resp.haslayer(TLSCertificate):
 				cert = Certificate.load(bytes(resp.getlayer(TLSCertificate).data))
 				cert_hostnames = cert.valid_domains
@@ -504,6 +521,10 @@ class TLSScanner(object):
 				error = 1
 			else:
 				resp = SSL(resp[1])
+				#resp.show()
+				#import binascii
+				#print binascii.hexlify(str(resp.getlayer(TLSCertificateList)))
+				#print str(resp.getlayer(TLSCertificateList)).decode("hex")
 				if resp.haslayer(TLSAlert):
 					if resp[TLSAlert].description == 86:
 						#signaling suite supported
@@ -544,15 +565,18 @@ class TLSScanner(object):
 		#scan if compression is enabled (scan for every protocol?)
 		tls_scan_obj = TLSScanObject(target=self._target, server_name=self._hostname, version=ver, tls_compression=True,
 										time_to_wait=self._time_delay)
-		ver, resp = send_client_hello(tls_scan_obj)
-		resp = SSL(resp)
-		if resp.haslayer(TLSAlert):
-			if resp[TLSAlert].description == 50:
-				#server does not support TLS compression
-				self._compression_enabled = False
-		elif resp.haslayer(TLSServerHello):
-			#print "server sent hello back --> compression enabled"
-			self._compression_enabled = True
+		resp = send_client_hello(tls_scan_obj)
+		self._compression_enabled = False
+		if resp != None:
+			resp = SSL(resp[1])
+			if resp.haslayer(TLSAlert):
+				if resp[TLSAlert].description == 50:
+					#server does not support TLS compression
+					self._compression_enabled = False
+			elif resp.haslayer(TLSServerHello):
+				#print "server sent hello back --> compression enabled"
+				if resp.getlayer(TLSServerHello).compression_method != 0:
+					self._compression_enabled = True
 		print "\t\t\tdone. in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 
 	#
@@ -564,9 +588,11 @@ class TLSScanner(object):
 		ver = self._SUPP_PROTO[0]
 		tls_scan_obj = TLSScanObject(target=self._target, server_name=self._hostname, version=ver, tls_sec_reneg=True,
 										time_to_wait=self._time_delay)
-		ver, resp = send_client_hello(tls_scan_obj)
-		resp = SSL(resp)
-		self._secure_renegotiation = True if resp.haslayer(TLSExtRenegotiationInfo) else False
+		resp = send_client_hello(tls_scan_obj)
+		self._secure_renegotiation = False
+		if resp != None:
+			resp = SSL(resp[1])
+			self._secure_renegotiation = True if resp.haslayer(TLSExtRenegotiationInfo) else False
 		print "\tdone. in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 	
 	#
@@ -736,7 +762,7 @@ class TLSScanner(object):
 		
 		if self._verbose:
 			print "[*]CRL url: ", certificate.crl_distribution_points[0].url if (len(certificate.crl_distribution_points) > 0) else "NO CLR"
-			print "[*]OSCP url: ",certificate.ocsp_urls[0]
+			print "[*]OSCP url: ",certificate.ocsp_urls[0] if (len(certificate.ocsp_urls)>0) else "NO OCSP" 
 			print "[*]Valid domains for certificate: ", certificate.valid_domains if (len(certificate.valid_domains) > 0) else "None"
 
 	#

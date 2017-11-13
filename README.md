@@ -25,6 +25,7 @@ tlsscan is built upon [Scapy-SSL/TLS](https://github.com/tintinweb/scapy-ssl_tls
  * Using TOR network for scanning anonymously
  * Write report to file
  * Save full packet capture of the test to .pcap file
+ * Timing scan available
  * HTTP Strict Transport Security status
 
 
