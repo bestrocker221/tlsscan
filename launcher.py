@@ -14,7 +14,6 @@ parser = argparse.ArgumentParser(usage= sys.argv[0]+ ' <website> [options]',
 ...            Have fun! ...  
 ''')
 
-
 parser.add_argument('website',  type=str, action='store', help='website to scan.')
 parser.add_argument('-p', '--port',  type=int, action='store',default=443, help='TCP port to test (default: 443).')
 parser.add_argument('--fullscan', action='store_true', help='start a full scan of the website.')
@@ -59,21 +58,25 @@ def main():
 			exit("You need to have root privileges to run SNIFFING mode.\nExiting.")
 
 		filename = args.write + ".pcap" if args.write else "pcap_"+str(datetime.datetime.now()).replace(" ","_")+".pcap"
+
 		sniffer_process = Process(target=sniffer, args=(filename, scanner.target[0], args.torify))
 		sniffer_process.start()
 
+	mode = ''
 	if args.ciphers:
-		scanner.scan(TLSScanner.MODE.CIPHERS)
-		scanner.print_results()
+		mode = TLSScanner.MODE.CIPHERS
 	elif args.certscan:
-		scanner.scan(TLSScanner.MODE.CERTSCAN)
-		scanner.print_results()
+		mode = TLSScanner.MODE.CERTSCAN
 	elif args.suppproto:
-		scanner.scan(TLSScanner.MODE.SUPPROTO)
-		scanner.print_results()
+		mode = TLSScanner.MODE.SUPPROTO
 	if args.fullscan:
-		scanner.scan(TLSScanner.MODE.FULLSCAN)
-		scanner.print_results()
+		mode = TLSScanner.MODE.FULLSCAN
+
+	try:
+		scanner.scan(mode)
+	except Exception as ex:
+		print ex.message
+		print "sorry, report the problem."
 
 	if sniffer_process != None:
 		sniffer_process.terminate() 
@@ -83,9 +86,13 @@ def signal_handler(signal, frame):
     raise KeyboardInterrupt
 
 def sniffer(filename, ip, torify):
-	filter = "host " + str(ip) if not torify else ""
+	filter = "host " + str(ip) if not torify else None
 	signal.signal(signal.SIGTERM, signal_handler)
-	wrpcap(filename, sniff(filter=filter))
+	try:
+		wrpcap(filename, sniff(filter=filter))
+	except ValueError as ex:
+			print ex.message
+			print "Sorry, something went wrong with the sniffer process."
 
 def printScreen():
 	print(
