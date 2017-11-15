@@ -286,12 +286,13 @@ class TLSScanner(object):
 		a = timeit.default_timer()
 		tls_scan_obj = TLSScanObject(target=self.target, version=ver, server_name=self._hostname, session_ticket=True)
 		ver, resp = send_client_hello(tls_scan_obj)
-		resp = SSL(resp)
 		self._tls_session_tickets = False
-		for ext in resp.getlayer(TLSServerHello).extensions:
-			if ext.type == 35:
-				#session ticket supported
-				self._tls_session_tickets = True
+		if resp != None:
+			resp = SSL(resp)
+			for ext in resp.getlayer(TLSServerHello).extensions:
+				if ext.type == 35:
+					#session ticket supported
+					self._tls_session_tickets = True
 		print "\t\t\tdone. in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 
 	#
