@@ -22,7 +22,7 @@ parser.add_argument('--suppproto', action='store_true', help='perform only a sca
 parser.add_argument('--certscan', action='store_true', help='perform only a scan of the server certificate.')
 parser.add_argument('-d', '--delay', type=int, action='store', default=0, help="wait N milliseconds between each request.")
 parser.add_argument('-vv', '--verbose', action='store_true', default=False, help="show verbose information.")
-parser.add_argument('-w', '--write',  action='store_true', help='insert filename to write test output.')
+parser.add_argument('-w', '--write',  action='store_true', help='write scan output to file.')
 parser.add_argument('-s', '--sniff', action='store_true', help='save full packet capture in .pcap format. (NEED SUDO PRIVILEGES)')
 parser.add_argument('-t', '--torify', action='store_true', help='make the script running under Tor network.')
 parser.add_argument('-i', '--input',  type=argparse.FileType('r'), action='store', help='input file with website list (\\n separated.')
@@ -31,7 +31,7 @@ parser.add_argument('-v', '--version', action='version', version='version 0.1', 
 
 def main():
 	args = parser.parse_args()
-	print args
+	#print args
 	print "\n"
 	
 	if args.write:

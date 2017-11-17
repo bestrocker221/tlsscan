@@ -61,7 +61,7 @@ def send_client_hello(tls_scan_obj):
 	compression = range(1,0xff) if tls_scan_obj.tls_compression else 0x00
 
 	sock = TCPConnect(tls_scan_obj.target)
-	packet = TLSRecord(version=tls_scan_obj.version)/\
+	packet = TLSRecord(version="TLS_1_0")/\
 				TLSHandshake()/\
 				TLSClientHello(version=tls_scan_obj.version,
 							compression_methods=compression,
@@ -285,10 +285,10 @@ class TLSScanner(object):
 		ver = self._SUPP_PROTO[0]
 		a = timeit.default_timer()
 		tls_scan_obj = TLSScanObject(target=self.target, version=ver, server_name=self._hostname, session_ticket=True)
-		ver, resp = send_client_hello(tls_scan_obj)
+		resp = send_client_hello(tls_scan_obj)
 		self._tls_session_tickets = False
 		if resp != None:
-			resp = SSL(resp)
+			resp = SSL(resp[1])
 			for ext in resp.getlayer(TLSServerHello).extensions:
 				if ext.type == 35:
 					#session ticket supported
@@ -305,13 +305,14 @@ class TLSScanner(object):
 		ver = self._SUPP_PROTO[0]
 		a = timeit.default_timer()
 		tls_scan_obj = TLSScanObject(target=self.target, version=ver, server_name=self._hostname, ocsp=True)
-		ver, resp = send_client_hello(tls_scan_obj)
-		resp = SSL(resp)
-		server_hello = resp.getlayer(TLSServerHello)
+		resp = send_client_hello(tls_scan_obj)
 		self._tls_ocsp_stapling = False
-		for ext in server_hello.extensions:
-			if ext.type ==0x0005:
-				self._tls_ocsp_stapling = True
+		if resp[1] != None:
+			resp = SSL(resp[1])
+			server_hello = resp.getlayer(TLSServerHello)
+			for ext in server_hello.extensions:
+				if ext.type ==0x0005:
+					self._tls_ocsp_stapling = True
 		print "\t\t\tdone. in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 
 	#
@@ -328,10 +329,10 @@ class TLSScanner(object):
 		a = timeit.default_timer()
 
 		tls_scan_obj = TLSScanObject(target=self.target, version=ver, server_name=self._hostname, tls_heartbeat=True)
-		ver, resp = send_client_hello(tls_scan_obj)
+		resp = send_client_hello(tls_scan_obj)
 		self.tls_heartbeat = False
 		if resp != None:
-			resp = SSL(resp)
+			resp = SSL(resp[1])
 			self._tls_heartbeat = True if resp.haslayer(TLSExtHeartbeat) else False
 		print "\t\t\tdone. in --- %0.4f seconds ---" % float(timeit.default_timer()-a)
 		if self._tls_heartbeat:
@@ -717,7 +718,10 @@ class TLSScanner(object):
 		#printing support for SCSV
 		if self._tls_fallback_scsv != None:
 			print "\n[*]TLS_FALLBACK_SCSV supported? ",
-			print self._textColor("True", bcolors.OKGREEN) if self._tls_fallback_scsv else self._textColor("False", bcolors.FAIL)
+			if len(self._SUPP_PROTO) == 1:
+				print "Unknown, only one protocol supported."
+			else:
+				print self._textColor("True", bcolors.OKGREEN) if self._tls_fallback_scsv else self._textColor("False", bcolors.FAIL)
 		#printing support for compression
 		if self._compression_enabled != None:
 			print "\n[*]TLS COMPRESSION enabled? ",
@@ -771,7 +775,8 @@ class TLSScanner(object):
 
 		print "\n\n################## MISC ##################"
 		print "\nRequest to %s \nStatus code: %s %s" % (self._http_response.url, self._http_response.status_code, self._http_response.reason)
-		
+		print "Server: %s" % self._http_response.headers["server"]
+		print "Connection: %s" % self._http_response.headers["Connection"]
 		print "\n\n\n"
 
 	#
