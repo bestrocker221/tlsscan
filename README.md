@@ -187,6 +187,12 @@ Protocol: TLS_1_2 -> RSA_WITH_CAMELLIA_128_CBC_SHA (0x41) supported. non FS
 
 [*]RC4 supported?  NO
 
+################## MISC ##################
+
+Request to https://www.example.com/ 
+Status code: 200 OK
+Server: Apache/2.4.10 
+Connection: Keep-Alive
 
 
 
