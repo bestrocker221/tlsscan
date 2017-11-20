@@ -38,7 +38,7 @@ def TCPConnect(target):
 #
 # Function for receiving all data in the stream.
 #
-def recvall(sock, buf_size=1024):
+def recvall(sock, buf_size=2048):
 	buf = []
 	sock.settimeout(1)
 	while True:
@@ -53,7 +53,7 @@ def recvall(sock, buf_size=1024):
 
 
 # 
-# Function that deliver ClientHello and return the server response if any
+# Function that deliver a ClientHello message and return the server response if any
 # return (version, server_response) if accepted else None
 # 
 def send_client_hello(tls_scan_obj):
@@ -61,7 +61,7 @@ def send_client_hello(tls_scan_obj):
 	compression = range(1,0xff) if tls_scan_obj.tls_compression else 0x00
 
 	sock = TCPConnect(tls_scan_obj.target)
-	packet = TLSRecord(version="TLS_1_0")/\
+	packet = TLSRecord(version=tls_scan_obj.outer_version)/\
 				TLSHandshake()/\
 				TLSClientHello(version=tls_scan_obj.version,
 							compression_methods=compression,
@@ -96,7 +96,7 @@ def send_client_hello(tls_scan_obj):
 		try:
 			resp2 = sock.recv(8192)
 		except (socket.timeout, socket.error) as msg:
-			return (tls_scan_obj.version, str(msg))	
+			return (tls_scan_obj.version, "ERROR")	
 		sock.close()
 		return (tls_scan_obj.version, resp2)
 
@@ -149,6 +149,7 @@ class Event(object):
 		BEAST = 6
 		EXPORT = 7
 		DES = 8
+		POODLE = 9
 
 	class LEVEL:
 		RED = "RED"
@@ -161,11 +162,13 @@ class Event(object):
 		self.subject = subject
 
 class TLSScanObject(object):
-	def __init__(self, target, server_name, cipher_list= [], version="TLS_1_1", tls_fallback=False, ocsp=False,
-					tls_compression=False, tls_sec_reneg=False, tls_heartbeat=False, tls_heartbleed=False,
+	def __init__(self, target, server_name, cipher_list= [], outer_version="TLS_1_0", 
+						version="TLS_1_1", tls_fallback=False, ocsp=False, tls_heartbleed=False,
+					tls_compression=False, tls_sec_reneg=False, tls_heartbeat=False, 
 					session_ticket=False, time_to_wait=0):
 		self.target = target
 		self.version=version
+		self.outer_version = outer_version
 		self.tls_fallback = tls_fallback
 		self.tls_compression = tls_compression
 		self.tls_sec_reneg = tls_sec_reneg
@@ -307,7 +310,7 @@ class TLSScanner(object):
 		tls_scan_obj = TLSScanObject(target=self.target, version=ver, server_name=self._hostname, ocsp=True)
 		resp = send_client_hello(tls_scan_obj)
 		self._tls_ocsp_stapling = False
-		if resp[1] != None:
+		if resp != None:
 			resp = SSL(resp[1])
 			server_hello = resp.getlayer(TLSServerHello)
 			for ext in server_hello.extensions:
@@ -352,17 +355,11 @@ class TLSScanner(object):
 		self._tls_heartbleed = False		
 		if resp != None:
 			resp = resp[1]
-			if len(resp) == 0:
-				#print "nothing returned"
+			if str(resp) == "ERROR":
+				#no heartbleed
 				pass
-			elif resp == str(104):
-				#print "connection reset by peer"
-				pass
-			elif resp == "timed out":
-				#connection timed out, probably not vulnerable
-				pass
-			elif SSL(resp[1]).haslayer(TLSAlert):
-				if SSL(resp[1]).getlayer(TLSAlert).description == 10:
+			elif SSL(resp).haslayer(TLSAlert):
+				if SSL(resp).getlayer(TLSAlert).description == 10:
 					pass
 					#unexpected msg
 			else:
@@ -432,7 +429,12 @@ class TLSScanner(object):
 				error = 1
 			else:
 				resp = SSL(resp[1])
-				if resp.haslayer(TLSAlert):
+				if resp.haslayer(TLSServerHello):
+					if TLS_VERSIONS[resp.getlayer(TLSServerHello).version] != proto:
+						error = 1
+						print resp.getlayer(TLSServerHello).version, proto
+						print "PROTO NON COINCIDE"
+				elif resp.haslayer(TLSAlert):
 					if resp[TLSAlert].description == 86:
 						#signaling suite supported
 						#print "INAPPROPRIATE_FALLBACK --> SERVER SUPPORT SCSV SIGNALING"
@@ -443,7 +445,7 @@ class TLSScanner(object):
 					if resp[TLSAlert].description == 40:
 						#Handshake failure
 						error = 1
-				elif resp.haslayer(TLSCertificateList) and cert_list == None:
+				if resp.haslayer(TLSCertificateList) and cert_list == None:
 					cert_list = resp.getlayer(TLSCertificateList)
 			if error != 0:
 				self._EVENTS.append(Event(proto+"_SUPPORT", Event.LEVEL.WHITE, "TLSRecord version: TLS_1_0 Handshake version: %s not supported" % proto))
@@ -759,8 +761,8 @@ class TLSScanner(object):
 		print "\n\n################## ATTACKS #################"
 		if self._scan_mode == TLSScanner.MODE.CIPHERS or self._scan_mode == TLSScanner.MODE.FULLSCAN:
 			print "\n[*]POODLE attack (SSLv3): ",
-			if self._poodle and not self._secure_renegotiation:
-				print self._textColor("potentially vulnerable", bcolors.FAIL)
+			if self._poodle:
+				print self._textColor("Vulnerable!", bcolors.FAIL)
 			else:
 				print self._textColor("not vulnerable, SSLv3 disabled and/or TLS downgrade protection supported.", bcolors.OKGREEN)
 			print "\n[*]BEAST attack? ",
